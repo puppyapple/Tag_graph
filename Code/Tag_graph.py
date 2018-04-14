@@ -2,8 +2,11 @@
 import pandas as pd
 import numpy as np 
 import sys
+import os
 from pandas import Series
 from functools import reduce
+from pyspark import SparkContext 
+from pyspark.sql import SQLContext 
 
 #%%
 def pinjie(arr):
@@ -20,7 +23,8 @@ def tag_couple(l, length):
     return result
 
 #%%
-data_raw = pd.read_csv("../Data/company_tag_data_raw", sep='\t', dtype={"comp_id":str})
+print(os.getcwd())
+data_raw = pd.read_csv("Desktop/Innotree/Graph/Data/company_tag_data_raw", sep='\t', dtype={"comp_id":str})
 cols = ["comp_id", "comp_full_name", "label_name", "classify_id", "label_type", "label_type_num", "src_tags"]
 data_raw = data_raw[cols]
 concept_tags = data_raw[data_raw.classify_id!=4].reset_index(drop=True)
@@ -29,14 +33,16 @@ concept_tags["label_code"] = pd.Series(concept_tags.index).apply(lambda x: str(x
 tags_by_comp = concept_tags[["comp_id","label_code"]].groupby("comp_id").agg(pinjie).reset_index()
 
 #%%
-tag_code_dict = concept_tags.comp_full_name.drop_duplicates().reset_index(drop=True)
-
-tag_code_dict
-
-#tag_code_dict
-
+tag_code_dict = concept_tags.label_name.drop_duplicates().reset_index(drop=True)
+tag_code_dict = tag_code_dict.reset_index()
+# type(tag_code_dict)
 
 #%%
 length = len(str(len(tag_code_dict)))
 tags_by_comp["tag_couple"] = tags_by_comp.label_code.apply(lambda x: tag_couple(x.split(','), length))
 type(tags_by_comp.tag_couple[0])
+
+#%%
+sc = SparkContext()
+sqlContext=SQLContext(sc)
+
