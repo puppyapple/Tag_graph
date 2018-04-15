@@ -38,14 +38,17 @@ length = len(str(len(tag_code_dict)))
 concept_tags_with_code = pd.merge(concept_tags, tag_code_dict, how='left', left_on='label_name', right_on='label_name')
 # print(concept_tags_with_code)
 tags_by_comp = concept_tags_with_code[["comp_id","tag_code"]].groupby("comp_id").agg(pinjie).reset_index()
+tags_by_comp = tags_by_comp[tags_by_comp.tag_code.apply(lambda x: len(x.split(","))>=2)]
 tags_by_comp["tag_couple"] = tags_by_comp.tag_code.apply(lambda x: tag_couple(x.split(','), length))
 # tags_by_comp
 
+#%%
 sc = SparkContext.getOrCreate()
 sqlContext=SQLContext(sc)
 spark_tags_by_comp = sqlContext.createDataFrame(tags_by_comp)
 spark_result = spark_tags_by_comp.rdd.flatMap(lambda x: map(lambda x: (x,1),x[2].split(","))).reduceByKey(lambda x,y : x + y)
-print(spark_result.collect())
+df = sqlContext.createDataFrame(spark_result)
+df.show(100)
 print("finish")
 sc.stop()
 
