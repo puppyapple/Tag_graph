@@ -46,10 +46,15 @@ tags_by_comp["tag_couple"] = tags_by_comp.tag_code.apply(lambda x: tag_couple(x.
 sc = SparkContext.getOrCreate()
 sqlContext=SQLContext(sc)
 spark_tags_by_comp = sqlContext.createDataFrame(tags_by_comp)
-spark_result = spark_tags_by_comp.rdd.flatMap(lambda x: map(lambda x: (x,1),x[2].split(","))).reduceByKey(lambda x,y : x + y)
-df = sqlContext.createDataFrame(spark_result)
-df.show(100)
-print("finish")
+spark_result_rdd = spark_tags_by_comp.rdd.flatMap(lambda x: map(lambda x: (x,1),x[2].split(","))).reduceByKey(lambda x,y : x + y)
+spark_result_df = sqlContext.createDataFrame(spark_result_rdd, schema=['tag_link','count'])
+py_df = spark_result_df.toPandas()
+# spark_result_df.show(10)
+
+#%%
+tag_link_df = sqlContext.createDataFrame(spark_result_df.rdd.map(lambda x: (x[0].split("-")[0], x[0].split("-")[1], x[1])), ["tag1","tag2","count"])
+tag_link_df.show(20)
+#%%
 sc.stop()
 
 
