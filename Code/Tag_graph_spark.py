@@ -10,7 +10,7 @@ from pyspark import SparkContext
 from pyspark.sql import SQLContext 
 from collections import Counter
 from __future__ import division
-
+print(os.getcwd())
 # 自定义函数
 def pinjie(arr):
     return ",".join(arr)
@@ -38,10 +38,12 @@ def final_count(l1, l2):
 
 #%%
 # 数据预处理
+sc = SparkContext.getOrCreate()
+sqlContext=SQLContext(sc)
 data_raw = pd.read_csv("../Data/Input/company_tag_data_raw", sep='\t', dtype={"comp_id":str})
 cols = ["comp_id", "comp_full_name", "label_name", "classify_id", "label_type", "label_type_num", "src_tags"]
 data_raw = data_raw[cols]
-concept_tags = data_raw[data_raw.classify_id!=4].reset_index(drop=True)
+concept_tags = data_raw[data_raw.classify_id != 4].reset_index(drop=True)
 #%%
 level_data_raw = pd.read_csv("../Data/Input/label_code_relation", sep='\t', dtype={"label_root_id":str, "label_note_id":str})
 tag_code_dict = pd.concat([level_data_raw.label_note_name, level_data_raw.label_root_name]).drop_duplicates().reset_index(drop=True)
@@ -57,8 +59,6 @@ tag_code_dict
 #%%
 # （前期尝试，目前倾向于下面的一次性计算方案）
 # 单独计算两两标签共同出现在同一公司标签列表中的频次
-sc = SparkContext.getOrCreate()
-sqlContext=SQLContext(sc)
 tags_by_comp = concept_tags_with_code[["comp_id","tag_code"]].groupby("comp_id").agg(pinjie).reset_index()
 tags_by_comp = tags_by_comp[tags_by_comp.tag_code.apply(lambda x: len(x.split(","))>=2)]
 tags_by_comp["tag_couple"] = tags_by_comp.tag_code.apply(lambda x: tag_couple(list(set(x.split(','))), length))
@@ -88,18 +88,19 @@ print("Data saved!")
 # statistic_result_df.show()
 
 #%%
-# 概念标签之间的层级关系
+# 概念标签之间的层级关系（tag1 belongs to tag2）
 label_chains = level_data_raw[level_data_raw.label_type_root-level_data_raw.label_type_note==-1].reset_index(drop=True) \
     .rename(index=str, columns={"label_note_name": "label_node_name"}, inplace=False)[["label_node_name", "label_root_name"]]
 tag_code_root = tag_code_dict.rename(index=str, columns={"tag_code": "root_code", "label_name": "root_name"}, inplace=False)
 tag_code_node = tag_code_dict.rename(index=str, columns={"tag_code": "node_code", "label_name": "node_name"}, inplace=False)
 label_chains = label_chains.merge(tag_code_node, how='left', left_on='label_node_name', right_on='node_name') \
-    .merge(tag_code_root, how='left', left_on='label_root_name', right_on='root_name')#[["node_code", "root_code"]]
-label_chains
-#print(label_chains)
+    .merge(tag_code_root, how='left', left_on='label_root_name', right_on='root_name')[["node_code", "root_code"]]
+# statistic_result_df.filter("tag1='820' and tag2='000'").show()
+# 考虑将子标签公司数目占父标签公司数目的比例作为边强度
 
 #%%
-# 公司和标签关系
+# 公司和标签关系(company belongs to tag_x -> ... -> tag_1)
+concept_tags
 
 
 #%%
