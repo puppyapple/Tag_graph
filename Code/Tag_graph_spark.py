@@ -52,7 +52,7 @@ length = len(str(len(tag_code_dict)))
 tag_code_dict.tag_code = tag_code_dict.tag_code.apply(lambda x: str(x).zfill(length))
 concept_tags_with_code = pd.merge(concept_tags, tag_code_dict, how='left', left_on='label_name', right_on='label_name') \
     .dropna(how='any')
-# concept_tags_with_code
+tag_code_dict
 
 #%%
 # （前期尝试，目前倾向于下面的一次性计算方案）
@@ -89,9 +89,6 @@ print("Data saved!")
 
 #%%
 # 概念标签之间的层级关系
-level_data_raw = pd.read_csv("../Data/Input/label_code_relation", sep='\t', dtype={"label_root_id":str, "label_note_id":str})
-level_data_raw
-#%%
 label_chains = level_data_raw[level_data_raw.label_type_root-level_data_raw.label_type_note==-1].reset_index(drop=True) \
     .rename(index=str, columns={"label_note_name": "label_node_name"}, inplace=False)[["label_node_name", "label_root_name"]]
 tag_code_root = tag_code_dict.rename(index=str, columns={"tag_code": "root_code", "label_name": "root_name"}, inplace=False)
@@ -100,6 +97,7 @@ label_chains = label_chains.merge(tag_code_node, how='left', left_on='label_node
     .merge(tag_code_root, how='left', left_on='label_root_name', right_on='root_name')#[["node_code", "root_code"]]
 label_chains
 #print(label_chains)
+
 #%%
 # 公司和标签关系
 
