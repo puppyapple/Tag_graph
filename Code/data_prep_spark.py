@@ -138,4 +138,5 @@ tags.columns = ["tag_code", "tag_name" ,"tag_class", "tag_level"]
 tags.to_csv("../Data/Output/tags.points", index=False)
 print("Data saved!")
 #%%
+os.system("cp ../Data/Output/* E:/neo4j-community-3.3.4/import/")
 sc.stop()
