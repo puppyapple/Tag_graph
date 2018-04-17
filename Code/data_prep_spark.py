@@ -139,4 +139,3 @@ tags.to_csv("../Data/Output/tags.points", index=False)
 print("Data saved!")
 #%%
 sc.stop()
-#%%
