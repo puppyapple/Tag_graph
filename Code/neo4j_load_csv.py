@@ -21,22 +21,22 @@ with driver.session() as session:
 #%%
 with driver.session() as session:
     session.run("using periodic commit 1000 LOAD CSV WITH HEADERS FROM 'file:///level_tag_value.relations' AS line \
-         MATCH (from:tag{标签代码:line.node_code},to:tag{标签代码:line.root_code}) \
-         MERGE (from)-[r:lt_rel{公司占比:line.proportion}]->(to) ")
+         MATCH (from:tag{标签代码:line.node_code}),(to:tag{标签代码:line.root_code}) \
+         MERGE (from)-[r:lt_rel{公司占比:line.proportion}]->(to)")
     print("Level tag relations loaded!")
 
 #%%
 with driver.session() as session:
     session.run("using periodic commit 1000 LOAD CSV WITH HEADERS FROM 'file:///tag_relation_value.relations' AS line \
-         MATCH (from:tag{标签代码:line.tag1},to:tag{标签代码:line.tag2}) \
+         MATCH (from:tag{标签代码:line.tag1}),(to:tag{标签代码:line.tag2}) \
          MERGE (from)-[r:tt_rel{公司交集数:line.intersection,公司并集数:line.union,关联强度:line.percentage}]->(to) ")
     print("Tag tag relations loaded!")
 
 #%%
 with driver.session() as session:
     session.run("using periodic commit 1000 LOAD CSV WITH HEADERS FROM 'file:///company_tag.relations' AS line \
-         MATCH (from:company{公司代码:line.comp_id},to:tag{标签代码:line.tag_code}) \
+         MATCH (from:company{公司代码:line.comp_id}),(to:tag{标签代码:line.tag_code}) \
          MERGE (from)-[r:ct_rel{}]->(to) ")
-    print("Tag tag relations loaded!")
+    print("Company tag relations loaded!")
 #%%
 
