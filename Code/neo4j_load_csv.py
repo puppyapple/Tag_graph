@@ -9,7 +9,7 @@ driver = GraphDatabase.driver(uri, auth=("innotree", "innotree"))
 #%%
 with driver.session() as session:
     session.run("using periodic commit 1000 LOAD CSV WITH HEADERS FROM 'file:///tags.points' AS line \
-        MERGE (t:tag{标签代码:line.tag_code,标签名称:line.tag_name,标签类别:line.tag_class,标签级别:line.tag_level})")
+        MERGE (t:tag{标签代码:line.tag_code,标签名称:line.tag_name,标签级别:line.tag_level})")
     print("Tags loaded!")
 
 #%%

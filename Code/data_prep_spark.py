@@ -4,12 +4,15 @@ import pandas as pd
 import numpy as np 
 import sys
 import os
+
 from pandas import Series
 from functools import reduce
 from pyspark import SparkContext 
 from pyspark.sql import SQLContext 
 from collections import Counter
 from __future__ import division
+from sklearn import preprocessing
+from sklearn.preprocessing import MinMaxScaler
 print(os.getcwd())
 # 自定义函数
 def pinjie(arr):
@@ -39,6 +42,14 @@ def final_count(l1, l2):
 #%%
 # 数据预处理
 # 公司标签数据
+header_dict = {
+    "level_tag_value":[":START_ID(Tag)", ":END_ID(Tag)", "公司占比"],
+    "company_tag":[":START_ID(Company)", ":END_ID(Tag)"],
+    "tag_relation_value":[":START_ID(Tag)", ":END_ID(Tag)", "公司交集数", "公司并集数目", "关联强度"],
+    "companies":["公司代码:ID(Company)", "公司全称"],
+    "tags":["标签代码:ID(Tag)", "标签名称"]
+}
+#%%
 sc = SparkContext.getOrCreate()
 sqlContext=SQLContext(sc)
 data_raw = pd.read_csv("../Data/Input/company_tag_data_raw", sep='\t', dtype={"comp_id":str})
@@ -93,14 +104,16 @@ label_chains = label_chains.merge(node_tag_companies, how='left', left_on='node_
 label_chains["proportion"] = label_chains.node_comps.apply(lambda x: len(x.split(",")) if isinstance(x, str) else 0) \
     /label_chains.root_comps.apply(lambda x: len(x.split(",")) if isinstance(x, str) else 0)
 label_chains.fillna(0.0, inplace=True)
-label_chains_new = label_chains[level_data_raw.label_type_root-level_data_raw.label_type_note==-1]
-# label_chains
-label_chains_new[["node_code", "root_code", "proportion"]].to_csv("../Data/Output/level_tag_value.relations", index=False)
+label_chains_new = label_chains[level_data_raw.label_type_root-level_data_raw.label_type_note==-1][["node_code", "root_code", "proportion"]]
+label_chains_new.columns = header_dict["level_tag_value"]
+label_chains_new.to_csv("../Data/Output/level_tag_value.relations", index=False)
 print("Data saved!")
 #%%
 # 公司和标签关系(company belongs to tag_x -> ... -> tag_1)
 company_tag_relations = concept_tags_with_code.groupby(["comp_id", "label_type_num"]).apply(lambda x: x[x.label_type==x.label_type.max()])
-company_tag_relations[["comp_id","tag_code"]].to_csv("../Data/Output/company_tag.relations", index=False)
+company_tag_relations = company_tag_relations[["comp_id","tag_code"]]
+company_tag_relations.columns = header_dict["company_tag"]
+company_tag_relations.to_csv("../Data/Output/company_tag.relations", index=False)
 print("Data saved!")
 
 #%%
@@ -123,20 +136,58 @@ print(len(label_chains_link))
 # len(statistic_result_py_df.merge(label_chains_link, how='inner', left_on='tag_link', right_on='node_root_link'))
 tag_relation_value = statistic_result_py_df.merge(label_chains_link, how='left', left_on='tag_link', right_on='node_root_link')
 tag_relation_value = tag_relation_value[tag_relation_value.mark != 1.0][["tag1", "tag2", "intersection", "union", "percentage"]]
+target = tag_relation_value.percentage.values.reshape(-1, 1)
+scaler = MinMaxScaler(feature_range=(1, 100))
+scaler.fit(target)
+tag_relation_value.percentage = scaler.transform(target)
+tag_relation_value.columns = header_dict["tag_relation_value"]
 tag_relation_value.to_csv("../Data/Output/tag_relation_value.relations", index=False)
 print("Data saved!")
+tag_relation_value
 # statistic_result_df.show()
 
 #%%
 # 节点数据
 # 公司
-companies = concept_tags[["comp_id", "comp_full_name"]].drop_duplicates().reset_index(drop=True)
+companies = concept_tags_with_code[["comp_id", "comp_full_name"]].drop_duplicates()
+companies.comp_full_name = companies.comp_full_name.apply(lambda x: x.strip().replace("(","（").replace(")","）"))
+companies = companies.groupby("comp_id").apply(lambda x: x[x.comp_full_name==x.comp_full_name.max()]).drop_duplicates().reset_index(drop=True)
+companies.columns = header_dict["companies"]
 companies.to_csv("../Data/Output/companies.points", index=False)
 # 标签
-tags = concept_tags_with_code[["tag_code", "label_name" ,"classify_id", "label_type"]].drop_duplicates().reset_index(drop=True)
-tags.columns = ["tag_code", "tag_name" ,"tag_class", "tag_level"]
+tags = concept_tags_with_code[["tag_code", "label_name"]].drop_duplicates().reset_index(drop=True)
+tags.columns = header_dict["tags"]
 tags.to_csv("../Data/Output/tags.points", index=False)
 print("Data saved!")
+
 #%%
-os.system("cp ../Data/Output/* E:/neo4j-community-3.3.4/import/")
+print(os.getcwd())
+if(os.getcwd() != "d:\标签图谱\测试代码\Data\Output"):
+    os.chdir("../Data/Output")
+print(os.getcwd())
+print(os.system("rm -rf graph.db"))
+print(os.system("rm -rf E:/neo4j-community-3.3.4/data/databases/graph.db"))
+cp_results = os.system("cp ./* E:/neo4j-community-3.3.4/import/")
+print(cp_results)
+import_neo4j = 100
+if cp_results == 0 :
+    print("Data copied to neo4j import directory!")
+    import_neo4j = os.system(
+        "neo4j-import --into graph.db --id-type string  \
+        --nodes:Company companies.points  \
+        --nodes:Tag tags.points  \
+        --relationships:LINKED_WITH tag_relation_value.relations  \
+        --relationships:BELONGS_TO company_tag.relations  \
+        --relationships:NODE_OF level_tag_value.relations")
+if import_neo4j == 0:
+    print("Data imported to neo4j!")
+    os.system("cp -r graph.db E:/neo4j-community-3.3.4/data/databases/")
+else:
+    print("Import to neo4j failed!")
+
+os.chdir("d:/标签图谱/测试代码/Tag_graph")
+#%%
 sc.stop()
+
+#%%
+statistic_result_py_df.min()
