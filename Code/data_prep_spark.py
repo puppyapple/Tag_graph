@@ -122,6 +122,7 @@ comps_by_tag_df2 = comps_by_tag_df.withColumnRenamed("tag_code", "tag_code2").wi
 all_relation = comps_by_tag_df.crossJoin(comps_by_tag_df2).filter("tag_code != tag_code2")
 statistic_result_rdd = all_relation.rdd \
     .map(lambda x: ((x[0],x[2]) if int(x[0])>=int(x[2]) else (x[2],x[0])) + final_count(x[1].split(","),x[3].split(","))).distinct()
+# statistic_result_rdd.collect()
 statistic_result_df = sqlContext.createDataFrame(statistic_result_rdd, schema=["tag1", "tag2", "intersection", "union", "percentage"]) \
     .filter("intersection != 0")
 statistic_result_py_df = statistic_result_df.toPandas()
@@ -134,8 +135,8 @@ label_chains_link.columns = ["mark", "node_root_link"]
 label_chains_link.mark = label_chains_link.mark.apply(lambda x: 1)
 print(len(label_chains_link))
 # len(statistic_result_py_df.merge(label_chains_link, how='inner', left_on='tag_link', right_on='node_root_link'))
-tag_relation_value = statistic_result_py_df.merge(label_chains_link, how='left', left_on='tag_link', right_on='node_root_link')
-tag_relation_value = tag_relation_value[tag_relation_value.mark != 1.0][["tag1", "tag2", "intersection", "union", "percentage"]]
+tag_relation_with_link = statistic_result_py_df.merge(label_chains_link, how='left', left_on='tag_link', right_on='node_root_link')
+tag_relation_value = tag_relation_with_link[tag_relation_with_link.mark != 1.0][["tag1", "tag2", "intersection", "union", "percentage"]]
 target = tag_relation_value.percentage.values.reshape(-1, 1)
 scaler = MinMaxScaler(feature_range=(1, 100))
 scaler.fit(target)
@@ -143,7 +144,7 @@ tag_relation_value.percentage = scaler.transform(target)
 tag_relation_value.columns = header_dict["tag_relation_value"]
 tag_relation_value.to_csv("../Data/Output/tag_relation_value.relations", index=False)
 print("Data saved!")
-tag_relation_value
+# tag_relation_value
 # statistic_result_df.show()
 
 #%%
@@ -190,4 +191,9 @@ os.chdir("D:/标签图谱/测试代码/Tag_graph")
 sc.stop()
 
 #%%
-statistic_result_py_df.min()
+tag_tag = tag_relation_value[[":START_ID(Tag)", ":END_ID(Tag)", "关联强度"]]
+tag_tag_reverse = tag_tag.copy()
+tag_tag_reverse.columns = [":END_ID(Tag)", ":START_ID(Tag)", "关联强度"]
+tag_tag_reverse
+link_bidirect = pd.concat([tag_tag, tag_tag_reverse]).drop_duplicates()
+link_bidirect.groupby(":START_ID(Tag)")
