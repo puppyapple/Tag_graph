@@ -1,5 +1,6 @@
 #%%
 # 库加载
+from __future__ import division
 import pandas as pd
 import numpy as np 
 import sys
@@ -10,7 +11,6 @@ from functools import reduce
 from pyspark import SparkContext 
 from pyspark.sql import SQLContext 
 from collections import Counter
-from __future__ import division
 from sklearn import preprocessing
 from sklearn.preprocessing import MinMaxScaler
 print(os.getcwd())
@@ -162,7 +162,7 @@ print("Data saved!")
 
 #%%
 print(os.getcwd())
-if(os.getcwd() != "d:\标签图谱\测试代码\Data\Output"):
+if(os.getcwd() != "D:\\标签图谱\\测试代码\\Data\\Output"):
     os.chdir("../Data/Output")
 print(os.getcwd())
 print(os.system("rm -rf graph.db"))
@@ -185,7 +185,7 @@ if import_neo4j == 0:
 else:
     print("Import to neo4j failed!")
 
-os.chdir("d:/标签图谱/测试代码/Tag_graph")
+os.chdir("D:/标签图谱/测试代码/Tag_graph")
 #%%
 sc.stop()
 
