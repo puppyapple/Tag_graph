@@ -112,7 +112,7 @@ print("Data saved!")
 #%%
 # 公司和标签关系(company belongs to tag_x -> ... -> tag_1)
 company_tag_relations = concept_tags_with_code.groupby(["comp_id", "label_type_num"]).apply(lambda x: x[x.label_type==x.label_type.max()])
-company_tag_relations = company_tag_relations[["comp_id","tag_code"]]
+company_tag_relations = company_tag_relations[["comp_id","tag_code"]].drop_duplicates()
 company_tag_relations.columns = header_dict["company_tag"]
 company_tag_relations.to_csv("../Data/Output/company_tag.relations", index=False)
 print("Data saved!")
@@ -158,7 +158,7 @@ link_bidirect = pd.concat([tag_tag, tag_tag_reverse]).drop_duplicates()
 grouped_link = link_bidirect.groupby([":START_ID(Tag)", ":END_ID(Tag)"]).agg({"关联强度": "sum"})
 relative_link = grouped_link.groupby(level=0).apply(lambda x: 100*x/float(x.sum())).reset_index()
 relative_link.columns = header_dict["relative_link"]
-relative_link.to_csv("../Data/Output/relative_link.relations")
+relative_link.to_csv("../Data/Output/relative_link.relations", index=False)
 print("Data saved!")
 
 #%%
@@ -176,6 +176,7 @@ tags.to_csv("../Data/Output/tags.points", index=False)
 print("Data saved!")
 
 #%%
+# 生成neo4j数据库文件并导入库
 print(os.getcwd())
 if(os.getcwd() != "D:\\标签图谱\\测试代码\\Data\\Output"):
     os.chdir("../Data/Output")
@@ -202,8 +203,54 @@ else:
     print("Import to neo4j failed!")
 
 os.chdir("D:/标签图谱/测试代码/Tag_graph")
+
+#%%
+# 生成gephi输入文件csv
+gephi_headers = {
+    "points": ["Id", "Label"],
+    "r1": ["Id", "Source", "Target", "Type", "Label"],
+    "r2": ["Id", "Source", "Target", "Weight", "Type", "Label"],
+    "r3": ["Id", "Source", "Target", "Weight", "Type", "Label"],
+    "r4": ["Id", "Source", "Target", "Weight", "Type", "Label"]
+}
+p1 = pd.read_csv("../Data/Output/companies.points")
+p1.columns = gephi_headers["points"]
+p1.to_csv("../../可视化/companies.csv", index=False)
+
+p2 = pd.read_csv("../Data/Output/tags.points")
+p2.columns = gephi_headers["points"]
+p2.to_csv("../../可视化/tags.csv", index=False)
+
+r1 = pd.read_csv("../Data/Output/company_tag.relations").reset_index()
+r1["Type"] = "DIRECTED"
+r1["Label"] = "BELONGS_TO"
+r1["index"] = r1.Label + "_" + r1["index"].apply(lambda x: str(x))
+r1.columns = gephi_headers["r1"]
+r1.to_csv("../../可视化/company_tag.csv", index=False)
+
+r2 = pd.read_csv("../Data/Output/level_tag_value.relations").reset_index()
+r2["Type"] = "DIRECTED"
+r2["Label"] = "NODE_OF"
+r2["index"] = r2.Label + "_" + r2["index"].apply(lambda x: str(x))
+r2.columns = gephi_headers["r2"]
+r2.to_csv("../../可视化/level_tag_value.csv", index=False)
+
+r3 = pd.read_csv("../Data/Output/relative_link.relations").reset_index()
+r3["Type"] = "DIRECTED"
+r3["Label"] = "LINKS_TO_R"
+r3["index"] = r3.Label + "_" + r3["index"].apply(lambda x: str(x))
+r3.columns = gephi_headers["r3"]
+r3.to_csv("../../可视化/relative_link.csv", index=False)
+
+r4 = pd.read_csv("../Data/Output/tag_relation_value.relations").reset_index()
+r4["Type"] = "UNDIRECTED"
+r4["Label"] = "LINKED_WITH_A"
+r4["index"] = r4.Label + "_" + r4["index"].apply(lambda x: str(x))
+r4 = r4.iloc[:, [0, 1, 2, 5, 6, 7]]
+r4.columns = gephi_headers["r4"]
+r4.to_csv("../../可视化/tag_relation_value.csv", index=False)
+
 #%%
 sc.stop()
-
 #%%
 tag_code_dict[tag_code_dict.tag_code=='827']
