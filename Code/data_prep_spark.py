@@ -46,6 +46,7 @@ header_dict = {
     "level_tag_value":[":START_ID(Tag)", ":END_ID(Tag)", "公司占比"],
     "company_tag":[":START_ID(Company)", ":END_ID(Tag)"],
     "tag_relation_value":[":START_ID(Tag)", ":END_ID(Tag)", "公司交集数", "公司并集数目", "关联强度"],
+    "relative_link":[":START_ID(Tag)", ":END_ID(Tag)", "相对关联强度"],
     "companies":["公司代码:ID(Company)", "公司全称"],
     "tags":["标签代码:ID(Tag)", "标签名称"]
 }
@@ -148,6 +149,19 @@ print("Data saved!")
 # statistic_result_df.show()
 
 #%%
+#相对关联度（与本标签之间的绝对强度占所有相关标签强度总和之比例）
+tag_tag = tag_relation_value[[":START_ID(Tag)", ":END_ID(Tag)", "关联强度"]]
+tag_tag_reverse = tag_tag.copy()
+tag_tag_reverse.columns = [":END_ID(Tag)", ":START_ID(Tag)", "关联强度"]
+tag_tag_reverse
+link_bidirect = pd.concat([tag_tag, tag_tag_reverse]).drop_duplicates()
+grouped_link = link_bidirect.groupby([":START_ID(Tag)", ":END_ID(Tag)"]).agg({"关联强度": "sum"})
+relative_link = grouped_link.groupby(level=0).apply(lambda x: 100*x/float(x.sum())).reset_index()
+relative_link.columns = header_dict["relative_link"]
+relative_link.to_csv("../Data/Output/relative_link.relations")
+print("Data saved!")
+
+#%%
 # 节点数据
 # 公司
 companies = concept_tags_with_code[["comp_id", "comp_full_name"]].drop_duplicates()
@@ -177,9 +191,10 @@ if cp_results == 0 :
         "neo4j-import --into graph.db --id-type string  \
         --nodes:Company companies.points  \
         --nodes:Tag tags.points  \
-        --relationships:LINKED_WITH tag_relation_value.relations  \
+        --relationships:LINKED_WITH_A tag_relation_value.relations  \
         --relationships:BELONGS_TO company_tag.relations  \
-        --relationships:NODE_OF level_tag_value.relations")
+        --relationships:NODE_OF level_tag_value.relations \
+        --relationships:LINKS_TO_R relative_link.relations")
 if import_neo4j == 0:
     print("Data imported to neo4j!")
     os.system("cp -r graph.db E:/neo4j-community-3.3.4/data/databases/")
@@ -191,9 +206,4 @@ os.chdir("D:/标签图谱/测试代码/Tag_graph")
 sc.stop()
 
 #%%
-tag_tag = tag_relation_value[[":START_ID(Tag)", ":END_ID(Tag)", "关联强度"]]
-tag_tag_reverse = tag_tag.copy()
-tag_tag_reverse.columns = [":END_ID(Tag)", ":START_ID(Tag)", "关联强度"]
-tag_tag_reverse
-link_bidirect = pd.concat([tag_tag, tag_tag_reverse]).drop_duplicates()
-link_bidirect.groupby(":START_ID(Tag)")
+tag_code_dict[tag_code_dict.tag_code=='827']
