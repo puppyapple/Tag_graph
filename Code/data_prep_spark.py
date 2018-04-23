@@ -178,7 +178,7 @@ print("Data saved!")
 #%%
 # 生成neo4j数据库文件并导入库
 print(os.getcwd())
-if(os.getcwd() != "D:\\标签图谱\\测试代码\\Data\\Output"):
+if(os.getcwd() != "D:\\标签图谱\\标签关系\\Data\\Output"):
     os.chdir("../Data/Output")
 print(os.getcwd())
 print(os.system("rm -rf graph.db"))
@@ -202,7 +202,7 @@ if import_neo4j == 0:
 else:
     print("Import to neo4j failed!")
 
-os.chdir("D:/标签图谱/测试代码/Tag_graph")
+os.chdir("D:/标签图谱/标签关系/Tag_graph")
 
 #%%
 # 生成gephi输入文件csv
