@@ -53,6 +53,7 @@ data_raw = data_raw[cols]
 concept_tags = data_raw[data_raw.classify_id != 4].reset_index(drop=True)
 concept_tags.label_name = concept_tags[["label_name", "label_type_num", "src_tags", "label_type"]] \
     .apply(lambda x: x[2].split("#")[x[1]-1].split("-")[max(x[3]-2, 0)] + ":" + x[0], axis=1)
+
 #%%
 # 概念关系表字典
 level_data_raw = pd.read_csv("../Data/Input/label_code_relation", sep='\t', dtype={"label_root_id":str, "label_note_id":str})
@@ -62,7 +63,6 @@ tag_code_dict = tag_code_dict.reset_index()
 tag_code_dict.rename(index=str, columns={"index": "tag_code"}, inplace=True)
 length = len(str(len(tag_code_dict)))
 tag_code_dict.tag_code = tag_code_dict.tag_code.apply(lambda x: str(x).zfill(length))
-
 
 #%%
 # 按标签聚合公司
@@ -93,10 +93,10 @@ label_chains_raw = level_data_raw.reset_index(drop=True) \
     .rename(index=str, columns={"label_note_name":"label_node_name", "label_type_note":"label_type_node"}, inplace=False)
 tag_code_root = tag_code_dict.rename(index=str, columns={"tag_code":"root_code", "label_name":"root_name"}, inplace=False)
 tag_code_node = tag_code_dict.rename(index=str, columns={"tag_code":"node_code", "label_name":"node_name"}, inplace=False)
-label_chains = label_chains_raw.merge(tag_code_node, how='left', left_on='label_node_name', right_on='node_name') \
+label_chains_full = label_chains_raw.merge(tag_code_node, how='left', left_on='label_node_name', right_on='node_name') \
     .merge(tag_code_root, how='left', left_on='label_root_name', right_on='root_name')[["node_code", "root_code", "label_type_node", "label_type_root"]].drop_duplicates()
-label_chains = label_chains[level_data_raw.label_type_root-level_data_raw.label_type_note==-1]
-label_chains
+label_chains = label_chains_full[level_data_raw.label_type_root-level_data_raw.label_type_note==-1]
+label_chains_full
 #%% 
 # 考虑将子标签公司数目占父标签公司数目的比例作为边强度
 node_tag_companies = comps_by_tag_with_code[["tag_code", "tag_code_father", "comp_id"]] \
@@ -108,11 +108,13 @@ label_chains = label_chains.merge(node_tag_companies, how='left', on=["node_code
 label_chains["proportion"] = label_chains.node_comps.apply(lambda x: len(set(x.split(","))) if isinstance(x, str) else 0) \
     /label_chains.root_comps.apply(lambda x: len(set(x.split(","))) if isinstance(x, str) else 0)
 label_chains.fillna(0.0, inplace=True)
-
+label_chains
 
 #%%
-label_chains_single = label_chains.copy()
-label_chains_single["proportion"] = label_chains_single["proportion"].apply(lambda x: 1/(1 + x))
+label_chains.describe()
+#%%
+label_chains_single = label_chains[["node_code", "root_code", "proportion"]]
+label_chains_single["proportion"] = label_chains_single["proportion"].apply(lambda x: 1/x)
 label_chains_reverse = label_chains_single.copy()
 label_chains_single.columns = ["tag1", "tag2", "distance"]
 label_chains_reverse.columns = ["tag2", "tag1", "distance"]
@@ -121,8 +123,6 @@ label_chains_final = pd.concat([label_chains_single, label_chains_reverse]).drop
 label_chains_final = label_chains_final[["tag1", "tag2", "distance"]]
 label_chains.describe()
 
-#%%
-comps_by_tag_rough_with_code
 #%%
 # 一次性统计两两标签覆盖公司列表的交集、并集数目及比例
 comps_by_tag_df =  sqlContext.createDataFrame(comps_by_tag_rough_with_code[["tag_code", "comp_id"]])
@@ -137,7 +137,7 @@ statistic_result_py_df = statistic_result_df.toPandas()
 statistic_result_py_df["tag_link"] = statistic_result_py_df.tag1 + "-" + statistic_result_py_df.tag2
 # statistic_result_py_df
 # 去掉标签关系结果中本已属于同一链条的数据
-label_chains_link = label_chains[["node_code", "root_code"]] \
+label_chains_link = label_chains_full[["node_code", "root_code"]] \
     .apply(lambda x: x[0] + "-" + x[1] if int(x[0])>=int(x[1]) else x[1]+ "-" + x[0], axis=1).reset_index()
 label_chains_link.columns = ["mark", "node_root_link"]
 label_chains_link.mark = label_chains_link.mark.apply(lambda x: 1)
@@ -163,9 +163,14 @@ tag_tag_reverse
 link_bidirect = pd.concat([tag_tag, tag_tag_reverse])
 grouped_link = link_bidirect.groupby(["tag1", "tag2"]).agg({"percentage": "sum"})
 relative_link = grouped_link.groupby(level=0).apply(lambda x: x/float(x.sum())).reset_index()
+relative_link.percentage = relative_link.percentage.apply(lambda x: -np.log(min(0.000001 + x, 1)))
+target = relative_link.percentage.values.reshape(-1, 1)
+scaler = MinMaxScaler(feature_range=(0, 1))
+scaler.fit(target)
+relative_link.percentage = scaler.transform(target)
 relative_link.columns = ["tag1", "tag2", "distance"]
-relative_link.distance = relative_link.distance.apply(lambda x: 1/(1 + x))
-# relative_link.distance.describe()
+relative_link.describe()
+
 #%%
 # 生成graph
 edges = pd.concat([relative_link, label_chains_final]).drop_duplicates()
