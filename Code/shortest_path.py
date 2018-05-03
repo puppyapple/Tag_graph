@@ -6,7 +6,7 @@ import numpy as np
 import sys
 import os
 import networkx as nx
-
+import matplotlib.pyplot as plt
 
 from pandas import Series
 from functools import reduce
@@ -44,21 +44,15 @@ def final_count(l1, l2):
 #%%
 # 数据预处理
 # 公司标签数据
-header_dict = {
-    "level_tag_value":[":START_ID(Tag)", ":END_ID(Tag)", "公司占比"],
-    "company_tag":[":START_ID(Company)", ":END_ID(Tag)"],
-    "tag_relation_value":[":START_ID(Tag)", ":END_ID(Tag)", "公司交集数", "公司并集数目", "关联强度"],
-    "relative_link":[":START_ID(Tag)", ":END_ID(Tag)", "相对关联强度"],
-    "companies":["公司代码:ID(Company)", "公司全称"],
-    "tags":["标签代码:ID(Tag)", "标签名称"]
-}
-#%%
 sc = SparkContext.getOrCreate()
 sqlContext=SQLContext(sc)
 data_raw = pd.read_csv("../Data/Input/company_tag_data_raw", sep='\t', dtype={"comp_id":str})
 cols = ["comp_id", "comp_full_name", "label_name", "classify_id", "label_type", "label_type_num", "src_tags"]
 data_raw = data_raw[cols]
+# data_raw.dtypes
 concept_tags = data_raw[data_raw.classify_id != 4].reset_index(drop=True)
+concept_tags.label_name = concept_tags[["label_name", "label_type_num", "src_tags", "label_type"]] \
+    .apply(lambda x: x[2].split("#")[x[1]-1].split("-")[max(x[3]-2, 0)] + ":" + x[0], axis=1)
 #%%
 # 概念关系表字典
 level_data_raw = pd.read_csv("../Data/Input/label_code_relation", sep='\t', dtype={"label_root_id":str, "label_note_id":str})
@@ -68,13 +62,30 @@ tag_code_dict = tag_code_dict.reset_index()
 tag_code_dict.rename(index=str, columns={"index": "tag_code"}, inplace=True)
 length = len(str(len(tag_code_dict)))
 tag_code_dict.tag_code = tag_code_dict.tag_code.apply(lambda x: str(x).zfill(length))
-concept_tags_with_code = pd.merge(concept_tags, tag_code_dict, how='left', left_on='label_name', right_on='label_name') \
-    .dropna(how='any')
+
+
+#%%
 # 按标签聚合公司
-comps_by_tag = concept_tags_with_code[["tag_code", "comp_id"]].groupby("tag_code").agg(pinjie).reset_index()
-comps_by_tag.tag_code = comps_by_tag.tag_code.apply(lambda x: x.zfill(length))
-comps_by_tag_df =  sqlContext.createDataFrame(comps_by_tag)
-# tag_code_dict
+comps_by_tag = concept_tags[["label_name", "comp_id"]].groupby("label_name").agg(pinjie).reset_index()
+comps_by_tag["label_name_father"] = comps_by_tag.label_name.apply(lambda x: x.split(":")[0])
+comps_by_tag["label_name"] = comps_by_tag.label_name.apply(lambda x: x.split(":")[1])
+comps_by_tag_rough = comps_by_tag.groupby("label_name").agg(pinjie).reset_index()[["label_name", "comp_id"]]
+comps_by_tag_rough
+
+#%%
+# 为标签分组表赋上标签代码
+concept_tags_with_code = concept_tags.merge(tag_code_dict, how='left', left_on='label_name', right_on='label_name') \
+    .dropna(how='any')
+comps_by_tag_rough_with_code = comps_by_tag_rough.merge(tag_code_dict, how='left', left_on='label_name', right_on='label_name') \
+    .dropna(how='any')
+comps_by_tag_rough_with_code
+#%% 
+tag_code_dict_2 = tag_code_dict.copy()
+tag_code_dict_2.columns = ["tag_code_father", "label_name_father"]
+comps_by_tag_with_code = comps_by_tag.merge(tag_code_dict, how='left', left_on='label_name', right_on='label_name') \
+    .merge(tag_code_dict_2, how='left', left_on='label_name_father', right_on='label_name_father') \
+    .dropna(how='any')
+comps_by_tag_with_code
 
 #%%
 # 概念标签之间的层级关系（tag1 belongs to tag2）
@@ -83,24 +94,38 @@ label_chains_raw = level_data_raw.reset_index(drop=True) \
 tag_code_root = tag_code_dict.rename(index=str, columns={"tag_code":"root_code", "label_name":"root_name"}, inplace=False)
 tag_code_node = tag_code_dict.rename(index=str, columns={"tag_code":"node_code", "label_name":"node_name"}, inplace=False)
 label_chains = label_chains_raw.merge(tag_code_node, how='left', left_on='label_node_name', right_on='node_name') \
-    .merge(tag_code_root, how='left', left_on='label_root_name', right_on='root_name')[["node_code", "root_code", "label_type_node", "label_type_root"]]
+    .merge(tag_code_root, how='left', left_on='label_root_name', right_on='root_name')[["node_code", "root_code", "label_type_node", "label_type_root"]].drop_duplicates()
+label_chains = label_chains[level_data_raw.label_type_root-level_data_raw.label_type_note==-1]
+label_chains
+#%% 
 # 考虑将子标签公司数目占父标签公司数目的比例作为边强度
-node_tag_companies = comps_by_tag.rename(index=str, columns={"tag_code":"node_code", "comp_id":"node_comps"}, inplace=False)
-root_tag_companies = comps_by_tag.rename(index=str, columns={"tag_code":"root_code", "comp_id":"root_comps"}, inplace=False)
-label_chains = label_chains.merge(node_tag_companies, how='left', left_on='node_code', right_on='node_code') \
+node_tag_companies = comps_by_tag_with_code[["tag_code", "tag_code_father", "comp_id"]] \
+    .rename(index=str, columns={"tag_code":"node_code", "tag_code_father": "root_code", "comp_id":"node_comps"}, inplace=False)
+root_tag_companies = comps_by_tag_rough_with_code[["tag_code", "comp_id"]] \
+    .rename(index=str, columns={"tag_code":"root_code", "comp_id":"root_comps"}, inplace=False)
+label_chains = label_chains.merge(node_tag_companies, how='left', on=["node_code", "root_code"]) \
     .merge(root_tag_companies, how='left', left_on='root_code', right_on='root_code')
-label_chains["proportion"] = label_chains.node_comps.apply(lambda x: len(x.split(",")) if isinstance(x, str) else 0) \
-    /label_chains.root_comps.apply(lambda x: len(x.split(",")) if isinstance(x, str) else 0)
+label_chains["proportion"] = label_chains.node_comps.apply(lambda x: len(set(x.split(","))) if isinstance(x, str) else 0) \
+    /label_chains.root_comps.apply(lambda x: len(set(x.split(","))) if isinstance(x, str) else 0)
 label_chains.fillna(0.0, inplace=True)
-label_chains["distance"] = label_chains["proportion"].apply(lambda x: 1/(1 + x))
-label_chains_single = label_chains[level_data_raw.label_type_root-level_data_raw.label_type_note==-1][["node_code", "root_code", "distance"]]
-label_chains_reverse = label_chains_single.copy()
-label_chains_reverse.columns = ["root_code", "node_code", "distance"]
-label_chains_final = pd.concat([label_chains_single, label_chains_reverse]).drop_duplicates()
-# label_chains_new.columns = header_dict["level_tag_value"]
+
 
 #%%
+label_chains_single = label_chains.copy()
+label_chains_single["proportion"] = label_chains_single["proportion"].apply(lambda x: 1/(1 + x))
+label_chains_reverse = label_chains_single.copy()
+label_chains_single.columns = ["tag1", "tag2", "distance"]
+label_chains_reverse.columns = ["tag2", "tag1", "distance"]
+label_chains_final = pd.concat([label_chains_single, label_chains_reverse]).drop_duplicates()
+# label_chains_new.columns = header_dict["level_tag_value"]
+label_chains_final = label_chains_final[["tag1", "tag2", "distance"]]
+label_chains.describe()
+
+#%%
+comps_by_tag_rough_with_code
+#%%
 # 一次性统计两两标签覆盖公司列表的交集、并集数目及比例
+comps_by_tag_df =  sqlContext.createDataFrame(comps_by_tag_rough_with_code[["tag_code", "comp_id"]])
 comps_by_tag_df2 = comps_by_tag_df.withColumnRenamed("tag_code", "tag_code2").withColumnRenamed("comp_id", "comp_id2")
 all_relation = comps_by_tag_df.crossJoin(comps_by_tag_df2).filter("tag_code != tag_code2")
 statistic_result_rdd = all_relation.rdd \
@@ -129,9 +154,6 @@ tag_relation_value.percentage = scaler.transform(target)
 # tag_relation_value.columns = header_dict["tag_relation_value"]
 
 #%%
-tag_tag
-
-#%%
 # 相对关联度（与本标签之间的绝对强度占所有相关标签强度总和之比例）
 tag_tag = tag_relation_value[["tag1", "tag2", "percentage"]]
 tag_tag_reverse = tag_tag.copy()
@@ -141,18 +163,31 @@ tag_tag_reverse
 link_bidirect = pd.concat([tag_tag, tag_tag_reverse])
 grouped_link = link_bidirect.groupby(["tag1", "tag2"]).agg({"percentage": "sum"})
 relative_link = grouped_link.groupby(level=0).apply(lambda x: x/float(x.sum())).reset_index()
-
+relative_link.columns = ["tag1", "tag2", "distance"]
+relative_link.distance = relative_link.distance.apply(lambda x: 1/(1 + x))
+# relative_link.distance.describe()
 #%%
 # 生成graph
 edges = pd.concat([relative_link, label_chains_final]).drop_duplicates()
+edges.columns = ["source", "target", "weight"]
+
+
+#%%
+tag_code_dict[tag_code_dict.tag_code=='317']
+#%%
+# len(set(data_raw[data_raw.label_name=='新物流']['comp_full_name']))
+len(list(comps_by_tag[comps_by_tag.tag_code=='106']['comp_id'])[0].split(','))
 #%%
 G = nx.MultiDiGraph(edges)
+#%% 
+print(data_raw[data_raw.label_name=='新物流'][['comp_full_name', 'label_name', 'src_tags']])
+
+
 
 #%%
 # 节点数据
 # 标签
 tags = concept_tags_with_code[["tag_code", "label_name"]].drop_duplicates().reset_index(drop=True)
-tags.columns = header_dict["tags"]
 
 
 #%%

@@ -57,6 +57,8 @@ data_raw = pd.read_csv("../Data/Input/company_tag_data_raw", sep='\t', dtype={"c
 cols = ["comp_id", "comp_full_name", "label_name", "classify_id", "label_type", "label_type_num", "src_tags"]
 data_raw = data_raw[cols]
 concept_tags = data_raw[data_raw.classify_id != 4].reset_index(drop=True)
+concept_tags.label_name = concept_tags[["label_name", "label_type_num", "src_tags", "label_type"]] \
+    .apply(lambda x: x[2].split("#")[x[1]-1].split("-")[max(x[3]-2, 0)] + ":" + x[0], axis=1)
 #%%
 # 概念关系表字典
 level_data_raw = pd.read_csv("../Data/Input/label_code_relation", sep='\t', dtype={"label_root_id":str, "label_note_id":str})
@@ -66,29 +68,27 @@ tag_code_dict = tag_code_dict.reset_index()
 tag_code_dict.rename(index=str, columns={"index": "tag_code"}, inplace=True)
 length = len(str(len(tag_code_dict)))
 tag_code_dict.tag_code = tag_code_dict.tag_code.apply(lambda x: str(x).zfill(length))
-concept_tags_with_code = pd.merge(concept_tags, tag_code_dict, how='left', left_on='label_name', right_on='label_name') \
-    .dropna(how='any')
-# 按标签聚合公司
-comps_by_tag = concept_tags_with_code[["tag_code", "comp_id"]].groupby("tag_code").agg(pinjie).reset_index()
-comps_by_tag.tag_code = comps_by_tag.tag_code.apply(lambda x: x.zfill(length))
-comps_by_tag_df =  sqlContext.createDataFrame(comps_by_tag)
-# tag_code_dict
 
-'''
-# （前期尝试，目前倾向于下面的一次性计算方案）
-# 单独计算两两标签共同出现在同一公司标签列表中的频次
-tags_by_comp = concept_tags_with_code[["comp_id","tag_code"]].groupby("comp_id").agg(pinjie).reset_index()
-tags_by_comp = tags_by_comp[tags_by_comp.tag_code.apply(lambda x: len(x.split(","))>=2)]
-tags_by_comp["tag_couple"] = tags_by_comp.tag_code.apply(lambda x: tag_couple(list(set(x.split(','))), length))
-spark_tags_by_comp = sqlContext.createDataFrame(tags_by_comp)
-spark_result_rdd = spark_tags_by_comp.rdd. \
-    flatMap(lambda x: map(lambda x: (x,1),x[2].split(","))).reduceByKey(lambda x,y : x + y)
-spark_result_df = sqlContext.createDataFrame(spark_result_rdd, schema=["tag_link","count"])
-tag_link_df = sqlContext.createDataFrame(spark_result_df.rdd. \
-    map(lambda x: (x[0].split("-")[0], x[0].split("-")[1], x[1])), ["tag1","tag2","count"])
-tag_link_py_df = tag_link_df.toPandas()
-# tag_link_df.collect()
-'''
+#%%
+# 按标签聚合公司
+comps_by_tag = concept_tags[["label_name", "comp_id"]].groupby("label_name").agg(pinjie).reset_index()
+comps_by_tag["label_name_father"] = comps_by_tag.label_name.apply(lambda x: x.split(":")[0])
+comps_by_tag["label_name"] = comps_by_tag.label_name.apply(lambda x: x.split(":")[1])
+comps_by_tag_rough = comps_by_tag.groupby("label_name").agg(pinjie).reset_index()[["label_name", "comp_id"]]
+concept_tags
+
+#%%
+# 为标签分组表赋上标签代码
+comps_by_tag_rough_with_code = comps_by_tag_rough.merge(tag_code_dict, how='left', left_on='label_name', right_on='label_name') \
+    .dropna(how='any')
+#%% 
+tag_code_dict_2 = tag_code_dict.copy()
+tag_code_dict_2.columns = ["tag_code_father", "label_name_father"]
+comps_by_tag_with_code = comps_by_tag.merge(tag_code_dict, how='left', left_on='label_name', right_on='label_name') \
+    .merge(tag_code_dict_2, how='left', left_on='label_name_father', right_on='label_name_father') \
+    .dropna(how='any')
+comps_by_tag_with_code
+
 #%%
 # 概念标签之间的层级关系（tag1 belongs to tag2）
 label_chains_raw = level_data_raw.reset_index(drop=True) \
@@ -97,28 +97,38 @@ tag_code_root = tag_code_dict.rename(index=str, columns={"tag_code":"root_code",
 tag_code_node = tag_code_dict.rename(index=str, columns={"tag_code":"node_code", "label_name":"node_name"}, inplace=False)
 label_chains = label_chains_raw.merge(tag_code_node, how='left', left_on='label_node_name', right_on='node_name') \
     .merge(tag_code_root, how='left', left_on='label_root_name', right_on='root_name')[["node_code", "root_code", "label_type_node", "label_type_root"]]
+label_chains = label_chains[level_data_raw.label_type_root-level_data_raw.label_type_note==-1]
+label_chains
 # 考虑将子标签公司数目占父标签公司数目的比例作为边强度
-node_tag_companies = comps_by_tag.rename(index=str, columns={"tag_code":"node_code", "comp_id":"node_comps"}, inplace=False)
-root_tag_companies = comps_by_tag.rename(index=str, columns={"tag_code":"root_code", "comp_id":"root_comps"}, inplace=False)
-label_chains = label_chains.merge(node_tag_companies, how='left', left_on='node_code', right_on='node_code') \
+node_tag_companies = comps_by_tag_with_code[["tag_code", "tag_code_father", "comp_id"]] \
+    .rename(index=str, columns={"tag_code":"node_code", "tag_code_father": "root_code", "comp_id":"node_comps"}, inplace=False)
+root_tag_companies = comps_by_tag_rough_with_code[["tag_code", "comp_id"]] \
+    .rename(index=str, columns={"tag_code":"root_code", "comp_id":"root_comps"}, inplace=False)
+label_chains = label_chains.merge(node_tag_companies, how='left', on=["node_code", "root_code"]) \
     .merge(root_tag_companies, how='left', left_on='root_code', right_on='root_code')
-label_chains["proportion"] = label_chains.node_comps.apply(lambda x: len(x.split(",")) if isinstance(x, str) else 0) \
-    /label_chains.root_comps.apply(lambda x: len(x.split(",")) if isinstance(x, str) else 0)
+label_chains["proportion"] = label_chains.node_comps.apply(lambda x: len(set(x.split(","))) if isinstance(x, str) else 0) \
+    /label_chains.root_comps.apply(lambda x: len(set(x.split(","))) if isinstance(x, str) else 0)
 label_chains.fillna(0.0, inplace=True)
-label_chains_new = label_chains[level_data_raw.label_type_root-level_data_raw.label_type_note==-1][["node_code", "root_code", "proportion"]]
+label_chains_new = label_chains[["node_code", "root_code", "proportion"]]
 label_chains_new.columns = header_dict["level_tag_value"]
 label_chains_new.to_csv("../Data/Output/level_tag_value.relations", index=False)
 print("Data saved!")
+
 #%%
 # 公司和标签关系(company belongs to tag_x -> ... -> tag_1)
+concept_tags.label_name = concept_tags.label_name.apply(lambda x: x.split(":")[1])
+concept_tags_with_code = concept_tags.merge(tag_code_dict, how='left', left_on='label_name', right_on='label_name') \
+    .dropna(how='any')
 company_tag_relations = concept_tags_with_code.groupby(["comp_id", "label_type_num"]).apply(lambda x: x[x.label_type==x.label_type.max()])
-company_tag_relations = company_tag_relations[["comp_id","tag_code"]].drop_duplicates()
+#%%
+company_tag_relations = company_tag_relations[["comp_id", "tag_code"]].drop_duplicates()
 company_tag_relations.columns = header_dict["company_tag"]
 company_tag_relations.to_csv("../Data/Output/company_tag.relations", index=False)
 print("Data saved!")
 
 #%%
 # 一次性统计两两标签覆盖公司列表的交集、并集数目及比例
+comps_by_tag_df =  sqlContext.createDataFrame(comps_by_tag_rough_with_code[["tag_code", "comp_id"]])
 comps_by_tag_df2 = comps_by_tag_df.withColumnRenamed("tag_code", "tag_code2").withColumnRenamed("comp_id", "comp_id2")
 all_relation = comps_by_tag_df.crossJoin(comps_by_tag_df2).filter("tag_code != tag_code2")
 statistic_result_rdd = all_relation.rdd \
