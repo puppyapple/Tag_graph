@@ -109,7 +109,10 @@ label_chains = label_chains.merge(node_tag_companies, how='left', on=["node_code
 label_chains["proportion"] = label_chains.node_comps.apply(lambda x: len(set(x.split(","))) if isinstance(x, str) else 0) \
     /label_chains.root_comps.apply(lambda x: len(set(x.split(","))) if isinstance(x, str) else 0)
 label_chains.fillna(0.0, inplace=True)
-label_chains_new = label_chains[["node_code", "root_code", "proportion"]]
+proportion_reset = label_chains.groupby(["root_code", "node_code"]).agg({"proportion": "sum"}) \
+    .groupby(level=0).apply(lambda x: x/float(x.sum())).reset_index()
+label_chains = label_chains.drop(['proportion'], axis=1).merge(proportion_reset, how='left', on=['root_code', 'node_code'])
+label_chains_new = label_chains[["node_code", "root_code", "proportion"]].copy()
 label_chains_new.columns = header_dict["level_tag_value"]
 label_chains_new.to_csv("../Data/Output/level_tag_value.relations", index=False)
 print("Data saved!")
