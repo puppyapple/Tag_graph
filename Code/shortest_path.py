@@ -94,7 +94,8 @@ label_chains_raw = level_data_raw.reset_index(drop=True) \
 tag_code_root = tag_code_dict.rename(index=str, columns={"tag_code":"root_code", "label_name":"root_name"}, inplace=False)
 tag_code_node = tag_code_dict.rename(index=str, columns={"tag_code":"node_code", "label_name":"node_name"}, inplace=False)
 label_chains_full = label_chains_raw.merge(tag_code_node, how='left', left_on='label_node_name', right_on='node_name') \
-    .merge(tag_code_root, how='left', left_on='label_root_name', right_on='root_name')[["node_code", "root_code", "label_type_node", "label_type_root"]].drop_duplicates()
+    .merge(tag_code_root, how='left', left_on='label_root_name', right_on='root_name') \
+    [["node_code", "label_node_name", "root_code", "label_root_name", "label_type_node", "label_type_root"]].drop_duplicates()
 label_chains = label_chains_full[level_data_raw.label_type_root-level_data_raw.label_type_note==-1]
 label_chains_full
 #%% 
@@ -111,10 +112,10 @@ label_chains.fillna(0.0, inplace=True)
 label_chains
 
 #%%
-label_chains.describe()
-#%%
 label_chains_single = label_chains[["node_code", "root_code", "proportion"]].copy()
-label_chains_single["proportion"] = label_chains_single["proportion"].apply(lambda x: (1 - x)*0.2)
+# 这里认为同一链条上的相邻标签距离整体要近于非同一链条上的，因此追加一个距离“弱化”系数
+weak_coef = 1/(6 - 1)
+label_chains_single["proportion"] = label_chains_single["proportion"].apply(lambda x: (1 - x) * weak_coef)
 label_chains_reverse = label_chains_single.copy()
 label_chains_single.columns = ["tag1", "tag2", "distance"]
 label_chains_reverse.columns = ["tag2", "tag1", "distance"]
@@ -136,6 +137,35 @@ statistic_result_df = sqlContext.createDataFrame(statistic_result_rdd, schema=["
 statistic_result_py_df = statistic_result_df.toPandas()
 statistic_result_py_df["tag_link"] = statistic_result_py_df.tag1 + "-" + statistic_result_py_df.tag2
 # statistic_result_py_df
+
+#%%
+# 各个概念“树”的内部关联值，基于路径
+code_table = pd.read_excel('../Data/Input/编码表_4_26.xls', sheet_name=0).drop('标识', axis=1).fillna('')
+code_table['list'] = code_table.apply(lambda x: ",".join([w for w in x if w != '']), axis=1)
+l = list(range(0, 12))
+l.append('list')
+code_table.columns = l
+label_list_by_tree = code_table[[0, 'list']].groupby(0).agg(lambda x: list(set(','.join(x).split(',')))).reset_index()
+label_list_by_tree.columns = ['tree_name', 'label_list']
+label_list_by_tree['label_count'] = label_list_by_tree.label_list.apply(lambda x: len(x))
+tree_dict_raw = label_list_by_tree[label_list_by_tree.label_count > 1]
+tree_dict = dict(zip(tree_dict_raw.tree_name, tree_dict_raw.label_list))
+label_chains_full['chain_type_node'] = label_chains_full.label_node_name.apply(lambda x: [k for k, v in tree_dict.items() if x in v])
+label_chains_full['chain_type_root'] = label_chains_full.label_root_name.apply(lambda x: [k for k, v in tree_dict.items() if x in v])
+label_chains_full['chain_type'] = label_chains_full[['chain_type_node', 'chain_type_root']].apply(lambda x: set(x[0]).intersection(set(x[1])), axis=1)
+label_chains_full['chain_type_count'] = label_chains_full.chain_type.apply(lambda x: len(x))
+direct_link = label_chains_full[label_chains_full.label_type_root - label_chains_full.label_type_node == -1]
+duplicated_chain_type = direct_link[direct_link.chain_type_count == 2]
+seperated_1 = duplicated_chain_type.copy()
+seperated_2 = duplicated_chain_type.copy()
+seperated_1.chain_type = seperated_1.chain_type.apply(lambda x: list(x)[0])
+seperated_2.chain_type = seperated_2.chain_type.apply(lambda x: list(x)[1])
+seperated_3 = direct_link[direct_link.chain_type_count == 1].copy()
+seperated_3.chain_type = seperated_3.chain_type.apply(lambda x: list(x)[0])
+chain_type_result = pd.concat([seperated_1, seperated_2, seperated_3]).reset_index(drop=True)
+chain_type_result
+
+#%%
 # 去掉标签关系结果中本已属于同一链条的数据
 label_chains_link = label_chains_full[["node_code", "root_code"]] \
     .apply(lambda x: x[0] + "-" + x[1] if int(x[0])>=int(x[1]) else x[1]+ "-" + x[0], axis=1).reset_index()
@@ -145,12 +175,7 @@ print(len(label_chains_link))
 # len(statistic_result_py_df.merge(label_chains_link, how='inner', left_on='tag_link', right_on='node_root_link'))
 tag_relation_with_link = statistic_result_py_df.merge(label_chains_link, how='left', left_on='tag_link', right_on='node_root_link')
 tag_relation_value = tag_relation_with_link[tag_relation_with_link.mark != 1.0][["tag1", "tag2", "percentage"]]
-'''
-target = tag_relation_value.percentage.values.reshape(-1, 1)
-scaler = MinMaxScaler(feature_range=(0, 1))
-scaler.fit(target)
-tag_relation_value.percentage = scaler.transform(target)
-'''
+
 #%%
 # 相对关联度（与本标签之间的绝对强度占所有相关标签强度总和之比例）
 tag_tag = tag_relation_value[["tag1", "tag2", "percentage"]]
