@@ -95,9 +95,9 @@ label_chains_raw = level_data_raw.reset_index(drop=True) \
     .rename(index=str, columns={"label_note_name":"label_node_name", "label_type_note":"label_type_node"}, inplace=False)
 tag_code_root = tag_code_dict.rename(index=str, columns={"tag_code":"root_code", "label_name":"root_name"}, inplace=False)
 tag_code_node = tag_code_dict.rename(index=str, columns={"tag_code":"node_code", "label_name":"node_name"}, inplace=False)
-label_chains = label_chains_raw.merge(tag_code_node, how='left', left_on='label_node_name', right_on='node_name') \
+label_chains_full = label_chains_raw.merge(tag_code_node, how='left', left_on='label_node_name', right_on='node_name') \
     .merge(tag_code_root, how='left', left_on='label_root_name', right_on='root_name')[["node_code", "root_code", "label_type_node", "label_type_root"]]
-label_chains = label_chains[level_data_raw.label_type_root-level_data_raw.label_type_note==-1]
+label_chains = label_chains_full[level_data_raw.label_type_root-level_data_raw.label_type_note==-1]
 label_chains
 # 考虑将子标签公司数目占父标签公司数目的比例作为边强度
 node_tag_companies = comps_by_tag_with_code[["tag_code", "tag_code_father", "comp_id"]] \
@@ -145,7 +145,7 @@ statistic_result_py_df = statistic_result_df.toPandas()
 statistic_result_py_df["tag_link"] = statistic_result_py_df.tag1 + "-" + statistic_result_py_df.tag2
 # statistic_result_py_df
 # 去掉标签关系结果中本已属于同一链条的数据
-label_chains_link = label_chains[["node_code", "root_code"]] \
+label_chains_link = label_chains_full[["node_code", "root_code"]] \
     .apply(lambda x: x[0] + "-" + x[1] if int(x[0])>=int(x[1]) else x[1]+ "-" + x[0], axis=1).reset_index()
 label_chains_link.columns = ["mark", "node_root_link"]
 label_chains_link.mark = label_chains_link.mark.apply(lambda x: 1)
@@ -171,7 +171,14 @@ tag_tag_reverse.columns = [":END_ID(Tag)", ":START_ID(Tag)", "关联强度"]
 tag_tag_reverse
 link_bidirect = pd.concat([tag_tag, tag_tag_reverse]).drop_duplicates()
 grouped_link = link_bidirect.groupby([":START_ID(Tag)", ":END_ID(Tag)"]).agg({"关联强度": "sum"})
-relative_link = grouped_link.groupby(level=0).apply(lambda x: 100*x/float(x.sum())).reset_index()
+relative_link = grouped_link.groupby(level=0).apply(lambda x: x/float(x.sum())).reset_index()
+
+relative_link["关联强度"] = relative_link["关联强度"].apply(lambda x: np.log2(min(0.000001 + x, 1)))
+target = relative_link["关联强度"].values.reshape(-1, 1)
+scaler = MinMaxScaler(feature_range=(0, 100))
+scaler.fit(target)
+relative_link["关联强度"] = scaler.transform(target)
+
 relative_link.columns = header_dict["relative_link"]
 relative_link.to_csv("../Data/Output/relative_link.relations", index=False)
 print("Data saved!")
