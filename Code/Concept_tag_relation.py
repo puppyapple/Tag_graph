@@ -123,7 +123,7 @@ print("Data saved!")
 concept_tags.label_name = concept_tags.label_name.apply(lambda x: x.split(":")[1])
 concept_tags_with_code = concept_tags.merge(tag_code_dict, how='left', left_on='label_name', right_on='label_name') \
     .dropna(how='any')
-company_tag_relations = concept_tags_with_code.groupby(["comp_id", "label_type_num"]).apply(lambda x: x[x.label_type==x.label_type.max()])
+company_tag_relations = concept_tags_with_code.groupby(["comp_id", "label_type_num"]).apply(lambda x: x[x.label_type == x.label_type.max()])
 #%%
 company_tag_relations = company_tag_relations[["comp_id", "tag_code"]].drop_duplicates()
 company_tag_relations.columns = header_dict["company_tag"]

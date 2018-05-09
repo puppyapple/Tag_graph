@@ -123,6 +123,7 @@ statistic_result_py_df = statistic_result_df.toPandas()
 statistic_result_py_df["tag_link"] = statistic_result_py_df.tag1 + "-" + statistic_result_py_df.tag2
 # statistic_result_py_df
 # 去掉标签关系结果中本已属于同一链条的数据
+# 将数值归一化到(0,1]
 label_chains_link = label_chains_full[["node_code", "root_code"]] \
     .apply(lambda x: x[0] + "-" + x[1] if int(x[0])>=int(x[1]) else x[1]+ "-" + x[0], axis=1).reset_index()
 label_chains_link.columns = ["mark", "node_root_link"]
@@ -144,5 +145,28 @@ same_link_relation = label_chains_new.rename(index=str, columns={"node_code": "t
 non_link_relation = tag_relation_value[["tag1", "tag2", "percentage"]].rename(index=str, columns={"percentage": "link_value"})
 link_relation_all = pd.concat([same_link_relation, non_link_relation])
 link_relation_all
+
 #%%
-link_relation_all.describe()
+link_relation_all2 = link_relation_all.copy()
+link_relation_all2.columns = ["tag2", "tag1", "link_value"]
+link_relation_all_with_reverse = pd.concat([link_relation_all, link_relation_all2])
+link_value_by_tag = link_relation_all_with_reverse.groupby("tag1").apply(lambda x: dict(zip(x.tag2, x.link_value))).reset_index()
+link_value_by_tag.columns = ["tag", "value_dict"]
+link_value_by_tag.value_dict = link_value_by_tag.value_dict.apply(lambda x: np.array(list(map(lambda y: x.get(y, 0) ,tag_code_list))))
+matrix_link_value = np.array(list(link_value_by_tag.value_dict))
+matrix_link_value = matrix_link_value + np.eye(len(matrix_link_value), dtype=float)
+matrix_link_value
+#%%
+# 按公司聚合标签
+tag_code_list = list(tag_code_dict.tag_code)
+tags_by_comp = concept_tags.transform({"label_name": lambda x: x.split(":")[1], "comp_id": lambda x: x}) \
+    .merge(tag_code_dict, how='left', left_on='label_name', right_on='label_name')[["tag_code", "comp_id"]] \
+    .dropna(how='any') \
+    .groupby("comp_id").agg(lambda x: dict(Counter(set(x)))).reset_index()
+tags_by_comp["tag_code_vector"] = tags_by_comp.tag_code.apply(lambda x: np.array(list(map(lambda y: x.get(y, 0) ,tag_code_list))))
+tags_by_comp
+
+#%%
+tags_vector_by_comp = tags_by_comp.drop(['comp_id'], axis=1)
+tags_vector_by_comp["key"] = 1
+tags_vector_by_comp.merge(tags_vector_by_comp, on='key')
