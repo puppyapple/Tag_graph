@@ -81,7 +81,6 @@ concept_tags
 # 为标签分组表赋上标签代码
 comps_by_tag_rough_with_code = comps_by_tag_rough.merge(tag_code_dict, how='left', left_on='label_name', right_on='label_name') \
     .dropna(how='any')
-#%% 
 tag_code_dict_2 = tag_code_dict.copy()
 tag_code_dict_2.columns = ["tag_code_father", "label_name_father"]
 comps_by_tag_with_code = comps_by_tag.merge(tag_code_dict, how='left', left_on='label_name', right_on='label_name') \
