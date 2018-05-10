@@ -174,7 +174,7 @@ relative_link = grouped_link.groupby(level=0).apply(lambda x: x/float(x.sum())).
 
 relative_link["关联强度"] = relative_link["关联强度"].apply(lambda x: np.log2(min(0.000001 + x, 1)))
 target = relative_link["关联强度"].values.reshape(-1, 1)
-scaler = MinMaxScaler(feature_range=(0, 100))
+scaler = MinMaxScaler(feature_range=(0.001, 1))
 scaler.fit(target)
 relative_link["关联强度"] = scaler.transform(target)
 

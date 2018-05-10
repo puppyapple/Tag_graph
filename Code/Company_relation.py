@@ -5,7 +5,7 @@ import pandas as pd
 import numpy as np 
 import sys
 import os
-
+import operator
 from pandas import Series
 from functools import reduce
 from pyspark import SparkContext 
@@ -13,6 +13,8 @@ from pyspark.sql import SQLContext
 from collections import Counter
 from sklearn import preprocessing
 from sklearn.preprocessing import MinMaxScaler
+from numpy import linalg
+
 print(os.getcwd())
 # 自定义函数
 def pinjie(arr):
@@ -147,6 +149,7 @@ link_relation_all = pd.concat([same_link_relation, non_link_relation])
 link_relation_all
 
 #%%
+tag_code_list = list(tag_code_dict.tag_code)
 link_relation_all2 = link_relation_all.copy()
 link_relation_all2.columns = ["tag2", "tag1", "link_value"]
 link_relation_all_with_reverse = pd.concat([link_relation_all, link_relation_all2])
@@ -158,15 +161,24 @@ matrix_link_value = matrix_link_value + np.eye(len(matrix_link_value), dtype=flo
 matrix_link_value
 #%%
 # 按公司聚合标签
-tag_code_list = list(tag_code_dict.tag_code)
 tags_by_comp = concept_tags.transform({"label_name": lambda x: x.split(":")[1], "comp_id": lambda x: x}) \
     .merge(tag_code_dict, how='left', left_on='label_name', right_on='label_name')[["tag_code", "comp_id"]] \
     .dropna(how='any') \
     .groupby("comp_id").agg(lambda x: dict(Counter(set(x)))).reset_index()
 tags_by_comp["tag_code_vector"] = tags_by_comp.tag_code.apply(lambda x: np.array(list(map(lambda y: x.get(y, 0) ,tag_code_list))))
-tags_by_comp
+comp_vector_dict = dict(zip(tags_by_comp.comp_id, tags_by_comp.tag_code_vector.apply(lambda x: np.array(x))))
+comp_vector_dict
 
 #%%
-tags_vector_by_comp = tags_by_comp.drop(['comp_id'], axis=1)
-tags_vector_by_comp["key"] = 1
-tags_vector_by_comp.merge(tags_vector_by_comp, on='key')
+def top_N(company, n, matrix=matrix_link_value):
+    comp_vector = comp_vector_dict[company]
+    result = {k: comp_vector.dot(matrix).dot(v.T)/np.sqrt(linalg.norm(comp_vector)*linalg.norm(v)) for k, v in comp_vector_dict.items()}
+    sorted_result = sorted(result.items(), key=operator.itemgetter(1),reverse=False)
+    return sorted_result[:n]
+
+#%%
+top_N('10004409824687717906', 50)
+
+#%%
+a = comp_vector_dict['10004409824687717906']
+a.dot(matrix_link_value).dot(a.T)/linalg.norm(a)

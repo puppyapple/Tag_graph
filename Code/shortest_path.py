@@ -20,7 +20,6 @@ print(os.getcwd())
 def pinjie(arr):
     return ",".join(arr)
 
-
 def tag_couple(l, length):
     result = []
     for i in range(len(l)):
@@ -114,12 +113,11 @@ label_chains = label_chains.drop(['proportion'], axis=1).merge(proportion_reset,
 label_chains.drop_duplicates(inplace=True)
 label_chains.fillna(0.0, inplace=True)
 
-
 #%%
 label_chains_single = label_chains[["node_code", "root_code", "proportion"]].copy()
 # 这里认为同一链条上的相邻标签距离整体要近于非同一链条上的，因此追加一个距离“弱化”系数
 weak_coef = 1/(6 - 1)
-label_chains_single["proportion"] = label_chains_single["proportion"].apply(lambda x: (1 - x) * weak_coef)
+label_chains_single["proportion"] = label_chains_single["proportion"].apply(lambda x: (1 - x))
 label_chains_reverse = label_chains_single.copy()
 label_chains_single.columns = ["tag1", "tag2", "distance"]
 label_chains_reverse.columns = ["tag2", "tag1", "distance"]
@@ -167,9 +165,11 @@ seperated_2.chain_type = seperated_2.chain_type.apply(lambda x: list(x)[1])
 seperated_3 = direct_link[direct_link.chain_type_count == 1].copy()
 seperated_3.chain_type = seperated_3.chain_type.apply(lambda x: list(x)[0])
 chain_type_result = pd.concat([seperated_1, seperated_2, seperated_3]).reset_index(drop=True)
-chain_type_result
+label_chains_full
+
 
 #%%
+'''
 # 去掉标签关系结果中本已属于同一链条的数据
 label_chains_link = label_chains_full[["node_code", "root_code"]] \
     .apply(lambda x: x[0] + "-" + x[1] if int(x[0])>=int(x[1]) else x[1]+ "-" + x[0], axis=1).reset_index()
@@ -182,6 +182,7 @@ tag_relation_value = tag_relation_with_link[tag_relation_with_link.mark != 1.0][
 
 #%%
 # 相对关联度（与本标签之间的绝对强度占所有相关标签强度总和之比例）
+tag_relation_value = statistic_result_py_df[["tag1", "tag2", "percentage"]]
 tag_tag = tag_relation_value[["tag1", "tag2", "percentage"]]
 tag_tag_reverse = tag_tag.copy()
 tag_tag_reverse.columns = ["tag2", "tag1", "percentage"]
@@ -197,24 +198,27 @@ scaler.fit(target)
 relative_link.percentage = scaler.transform(target)
 relative_link.columns = ["tag1", "tag2", "distance"]
 relative_link.describe()
-
+'''
+#%%
+abs_link = statistic_result_py_df[["tag1", "tag2", "percentage"]].copy()
+abs_link.percentage = abs_link.percentage.apply(lambda x: -np.log2(min(0.000001 + x, 1)))
+target = abs_link.percentage.values.reshape(-1, 1)
+scaler = MinMaxScaler(feature_range=(0, 1))
+scaler.fit(target)
+abs_link.percentage = scaler.transform(target)
+abs_link.columns = ["tag1", "tag2", "distance"]
+abs_link.describe()
 #%%
 # 生成graph
-edges = pd.concat([relative_link, label_chains_final]).drop_duplicates()
+edges = abs_link.drop_duplicates()
 edges.columns = ["source", "target", "weight"]
 edges
 
 #%%
-tag_code_dict[tag_code_dict.tag_code=='821']
-#%%
-G = nx.MultiDiGraph(edges)
+G = nx.Graph(edges)
 #%% 
-print(G.get_edge_data('822', '826'), nx.dijkstra_path(G, '822', '826'))
-
-
-
-#%%
-tag_code_dict
+a = list(nx.shortest_simple_paths(G,"000", "029", weight="weight"))
+a
 
 
 #%%
