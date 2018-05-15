@@ -36,10 +36,18 @@ def union_count(l1, l2):
 def intersection_count(l1, l2):
     return len(set(set(l1).intersection(set(l2))))
 
+def count_product(l1, l2):
+    return np.sqrt(len(set(l1)) * len(set(l2)))
+
 def final_count(l1, l2):
     ic = intersection_count(l1, l2)
     uc = union_count(l1, l2)
     return(ic, uc, ic/uc)
+
+def final_count2(l1, l2):
+    ic = intersection_count(l1, l2)
+    cp = count_product(l1, l2)
+    return(ic, cp, ic/cp)
 
 #%%
 # 数据预处理
@@ -170,15 +178,36 @@ comp_vector_dict = dict(zip(tags_by_comp.comp_id, tags_by_comp.tag_code_vector.a
 comp_vector_dict
 
 #%%
+company_info = data_raw[data_raw.classify_id != 4][["comp_id", "comp_full_name", "src_tags"]].drop_duplicates() \
+    .groupby("comp_id").agg({"comp_full_name": lambda x: x.max(), "src_tags": lambda x: "#".join(x)}).reset_index()
+comps_table = tags_by_comp[["comp_id", "tag_code_vector"]].merge(company_info, how="left", left_on="comp_id", right_on="comp_id")
+comps_table
+
+#%%
+def coef1(v1, v2):
+    return 1/(1 + (v1.sum() - v2.sum())**2)
+
+def coef2(v1, v2):
+    return v1.dot(v2.T)
+
+def coef(v1, v2):
+    return v1.dot(v2.T)/np.sqrt(1 + (v1.sum() - v2.sum())**2)
+
 def top_N(company, n, matrix=matrix_link_value):
     comp_vector = comp_vector_dict[company]
-    result = {k: comp_vector.dot(matrix).dot(v.T)/np.sqrt(linalg.norm(comp_vector)*linalg.norm(v)) for k, v in comp_vector_dict.items()}
-    sorted_result = sorted(result.items(), key=operator.itemgetter(1),reverse=False)
+    result = {k: comp_vector.dot(matrix).dot(v.T)*coef for k, v in comp_vector_dict.items()}
+    sorted_result = sorted(result.items(), key=operator.itemgetter(1),reverse=True)
     return sorted_result[:n]
 
-#%%
-top_N('10004409824687717906', 50)
+def top_N2(company, n, matrix=matrix_link_value):
+    tmp = comps_table.copy()
+    comp_vector = comp_vector_dict[company]
+    tmp["score"] = tmp.tag_code_vector.apply(lambda x: np.array(x)). \
+        apply(lambda x: comp_vector.dot(matrix).dot(x.T)*coef(comp_vector, x)) 
+    return tmp.sort_values(by=["score"], ascending=False)[:n]
+
 
 #%%
-a = comp_vector_dict['10004409824687717906']
-a.dot(matrix_link_value).dot(a.T)/linalg.norm(a)
+a = top_N2('10086147958042903546', 50)
+a.to_excel("../Data/Output/a.xlsx")
+a

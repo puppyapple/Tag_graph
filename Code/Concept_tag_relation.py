@@ -46,9 +46,9 @@ header_dict = {
     "level_tag_value":[":START_ID(Tag)", ":END_ID(Tag)", "公司占比"],
     "company_tag":[":START_ID(Company)", ":END_ID(Tag)"],
     "tag_relation_value":[":START_ID(Tag)", ":END_ID(Tag)", "公司交集数", "公司并集数目", "关联强度"],
-    "relative_link":[":START_ID(Tag)", ":END_ID(Tag)", "相对关联强度"],
+    # "relative_link":[":START_ID(Tag)", ":END_ID(Tag)", "相对关联强度"],
     "companies":["公司代码:ID(Company)", "公司全称"],
-    "tags":["标签代码:ID(Tag)", "标签名称"]
+    "tags":["标签代码:ID(Tag)", "标签名称", "标签类别"]
 }
 #%%
 sc = SparkContext.getOrCreate()
@@ -152,8 +152,9 @@ print(len(label_chains_link))
 # len(statistic_result_py_df.merge(label_chains_link, how='inner', left_on='tag_link', right_on='node_root_link'))
 tag_relation_with_link = statistic_result_py_df.merge(label_chains_link, how='left', left_on='tag_link', right_on='node_root_link')
 tag_relation_value = tag_relation_with_link[tag_relation_with_link.mark != 1.0][["tag1", "tag2", "intersection", "union", "percentage"]]
+tag_relation_value.percentage = tag_relation_value.percentage.apply(lambda x: np.log2(min(0.000001 + x, 1)))
 target = tag_relation_value.percentage.values.reshape(-1, 1)
-scaler = MinMaxScaler(feature_range=(1, 100))
+scaler = MinMaxScaler(feature_range=(0.001, 1))
 scaler.fit(target)
 tag_relation_value.percentage = scaler.transform(target)
 tag_relation_value.columns = header_dict["tag_relation_value"]
@@ -161,7 +162,7 @@ tag_relation_value.to_csv("../Data/Output/tag_relation_value.relations", index=F
 print("Data saved!")
 # tag_relation_value
 # statistic_result_df.show()
-
+'''
 #%%
 #相对关联度（与本标签之间的绝对强度占所有相关标签强度总和之比例）
 tag_tag = tag_relation_value[[":START_ID(Tag)", ":END_ID(Tag)", "关联强度"]]
@@ -181,7 +182,7 @@ relative_link["关联强度"] = scaler.transform(target)
 relative_link.columns = header_dict["relative_link"]
 relative_link.to_csv("../Data/Output/relative_link.relations", index=False)
 print("Data saved!")
-
+'''
 #%%
 # 节点数据
 # 公司
@@ -192,6 +193,7 @@ companies.columns = header_dict["companies"]
 companies.to_csv("../Data/Output/companies.points", index=False)
 # 标签
 tags = concept_tags_with_code[["tag_code", "label_name"]].drop_duplicates().reset_index(drop=True)
+tags["type"] = "标签类别"
 tags.columns = header_dict["tags"]
 tags.to_csv("../Data/Output/tags.points", index=False)
 print("Data saved!")
@@ -213,10 +215,9 @@ if cp_results == 0 :
         "neo4j-import --into graph.db --id-type string  \
         --nodes:Company companies.points  \
         --nodes:Tag tags.points  \
-        --relationships:LINKED_WITH_A tag_relation_value.relations  \
+        --relationships:LINKED_WITH tag_relation_value.relations  \
         --relationships:BELONGS_TO company_tag.relations  \
-        --relationships:NODE_OF level_tag_value.relations \
-        --relationships:LINKS_TO_R relative_link.relations")
+        --relationships:NODE_OF level_tag_value.relations")
 if import_neo4j == 0:
     print("Data imported to neo4j!")
     os.system("cp -r graph.db E:/neo4j-community-3.3.4/data/databases/")
@@ -225,6 +226,7 @@ else:
 
 os.chdir("D:/标签图谱/标签关系/Tag_graph")
 
+'''
 #%%
 # 生成gephi输入文件csv
 gephi_headers = {
@@ -256,22 +258,16 @@ r2["index"] = r2.Label + "_" + r2["index"].apply(lambda x: str(x))
 r2.columns = gephi_headers["r2"]
 r2.to_csv("../../可视化/level_tag_value.csv", index=False)
 
-r3 = pd.read_csv("../Data/Output/relative_link.relations").reset_index()
-r3["Type"] = "DIRECTED"
-r3["Label"] = "LINKS_TO_R"
-r3["index"] = r3.Label + "_" + r3["index"].apply(lambda x: str(x))
-r3.columns = gephi_headers["r3"]
-r3.to_csv("../../可视化/relative_link.csv", index=False)
-
 r4 = pd.read_csv("../Data/Output/tag_relation_value.relations").reset_index()
 r4["Type"] = "UNDIRECTED"
-r4["Label"] = "LINKED_WITH_A"
+r4["Label"] = "LINKED_WITH"
 r4["index"] = r4.Label + "_" + r4["index"].apply(lambda x: str(x))
 r4 = r4.iloc[:, [0, 1, 2, 5, 6, 7]]
 r4.columns = gephi_headers["r4"]
 r4.to_csv("../../可视化/tag_relation_value.csv", index=False)
-
+'''
 #%%
 sc.stop()
+
 #%%
 tag_code_dict[tag_code_dict.tag_code=='827']
