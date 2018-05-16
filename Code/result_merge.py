@@ -43,18 +43,14 @@ def final_count(l1, l2):
 # 数据预处理
 # 公司标签数据
 header_dict = {
-    "level_tag_value":[":START_ID(Tag)", ":END_ID(Tag)", "公司占比"],
-    "company_tag":[":START_ID(Company)", ":END_ID(Tag)"],
-    "tag_relation_value":[":START_ID(Tag)", ":END_ID(Tag)", "公司交集数", "公司并集数目", "关联强度"],
-    # "relative_link":[":START_ID(Tag)", ":END_ID(Tag)", "相对关联强度"],
-    "companies":["公司代码:ID(Company)", "公司全称"],
-    "tags":["标签代码:ID(Tag)", "标签名称", "标签类别"]
+    "point": ["id", "name", "property", "point_type"],
+    "relation": ["src_id", "target_id", "rel_value", "rel_type"]
 }
 
 #%% 
 # ******非概念部分******
 file_name_nc = "company_tag_data_non_concept"
-data_raw = pd.read_csv("../Data/Input/" + file_name, sep='\t', dtype={"comp_id": str, "comp_full_name": str, "key_word": str})[["comp_id", "comp_full_name", "key_word"]]
+data_raw = pd.read_csv("../Data/Input/" + file_name_nc, sep='\t', dtype={"comp_id": str, "comp_full_name": str, "key_word": str})[["comp_id", "comp_full_name", "key_word"]]
 data_raw.dropna(subset=["comp_id", "key_word"], inplace=True)
 data_raw = data_raw[data_raw.key_word != ""]
 
@@ -64,17 +60,16 @@ non_concept = pd.DataFrame(flatted, columns=["comp_id", "comp_full_name", "tag"]
 non_concept["count_comps"] = non_concept.tag
 comps_per_nc = non_concept.groupby("tag").agg({"comp_id": lambda x: list(x), "count_comps":"count"}).reset_index()
 comps_per_nc_part = comps_per_nc[comps_per_nc.count_comps >= 50][["tag", "comp_id"]]
-
+comps_per_nc_part
+#%%
 # 非概念标签字典
 tag_code_dict_nc = comps_per_nc_part.tag.reset_index()
 tag_code_dict_nc.columns = ["tag_code", "label_name"]
 length = len(str(len(tag_code_dict_nc)))
 tag_code_dict_nc.tag_code = tag_code_dict_nc.tag_code.apply(lambda x: str(x).zfill(length))
-tags_nc = tag_code_dict_nc.copy()
-tags_nc["type"] = "非概念标签"
+
 
 # 公司-非概念标签关系
-company_tag_relations_nc = non_concept.merge(tag_code_dict_nc, how="left", left_on="tag", right_on="label_name").dropna(how="any")
 
 
 #%% 
@@ -143,10 +138,10 @@ proportion_reset = label_chains.groupby(["root_code", "node_code"]).agg({"propor
 label_chains = label_chains.drop(['proportion'], axis=1).merge(proportion_reset, how='left', on=['root_code', 'node_code'])
 label_chains.drop_duplicates(inplace=True)
 label_chains.fillna(0.0, inplace=True)
-label_chains_new = label_chains[["node_code", "root_code", "proportion"]].copy()
-label_chains_new.columns = header_dict["level_tag_value"]
-label_chains_new.to_csv("../Data/Output/level_tag_value.relations", index=False)
-print("Node relation data saved!")
+tag_chains = label_chains[["node_code", "root_code", "proportion"]].copy()
+tag_chains["rel_type"] = "tag_chains"
+tag_chains.columns = header_dict["relation"]
+
 
 #%%
 # 公司和标签关系(company belongs to tag_x -> ... -> tag_1)
@@ -154,13 +149,16 @@ concept_tags.label_name = concept_tags.label_name.apply(lambda x: x.split(":")[1
 concept_tags_with_code = concept_tags.merge(tag_code_dict_c, how='left', left_on='label_name', right_on='label_name') \
     .dropna(how='any')
 company_tag_relations_c = concept_tags_with_code.groupby(["comp_id", "label_type_num"]).apply(lambda x: x[x.label_type == x.label_type.max()])
-#%%
 company_tag_relations_c = company_tag_relations_c[["comp_id", "tag_code"]].drop_duplicates()
-company_tag_relations_nc = ?
 
+company_tag_relations_nc = non_concept.merge(tag_code_dict_nc, how="left", left_on="tag", right_on="label_name").dropna(how="any")
+company_tag_relations_nc = company_tag_relations_nc[["comp_id", "tag_code"]].drop_duplicates()
+
+company_tag_relations = pd.concat([company_tag_relations_c, company_tag_relations_nc], axis=1)
+company_tag_relations["rel_value"] = 0
+company_tag_relations["rel_type"] = "company_tag"
 company_tag_relations.columns = header_dict["company_tag"]
-company_tag_relations_c.to_csv("../Data/Output/company_tag.relations", index=False)
-print("Data saved!")
+
 
 #%%
 # 一次性统计两两标签覆盖公司列表的交集、并集数目及比例
@@ -190,50 +188,41 @@ scaler = MinMaxScaler(feature_range=(0.001, 1))
 scaler.fit(target)
 tag_relation_value.percentage = scaler.transform(target)
 tag_relation_value.columns = header_dict["tag_relation_value"]
-tag_relation_value.to_csv("../Data/Output/tag_relation_value.relations", index=False)
-print("Data saved!")
+
 
 
 #%%
 # 节点数据
 # 公司
-companies = concept_tags_with_code[["comp_id", "comp_full_name"]].drop_duplicates()
-companies.comp_full_name = companies.comp_full_name.apply(lambda x: x.strip().replace("(","（").replace(")","）"))
-companies = companies.groupby("comp_id").apply(lambda x: x[x.comp_full_name==x.comp_full_name.max()]).drop_duplicates().reset_index(drop=True)
-companies.columns = header_dict["companies"]
-companies.to_csv("../Data/Output/companies.points", index=False)
+companies_c = concept_tags_with_code[["comp_id", "comp_full_name"]]
+companies_c.comp_full_name = companies_c.comp_full_name.apply(lambda x: x.strip().replace("(","（").replace(")","）")).drop_duplicates()
+companies_c = companies_c.groupby("comp_id").apply(lambda x: x[x.comp_full_name==x.comp_full_name.max()]).drop_duplicates().reset_index(drop=True)
+companies_c["property"] = ""
+companies_c["point_type"] = "company"
+companies_c.columns = header_dict["point"]
+
+companies_nc = non_concept.merge(comps_per_nc_part[["tag"]], how="left", left_on="tag", right_on="tag").dropna(how="any")[["comp_id", "comp_full_name"]] \
+    .drop_duplicates()
+companies_nc["property"] = ""
+companies_nc["point_type"] = "company"
+companies_nc.columns = header_dict["point"]
+
+companies = pd.concat([companies_c, companies_nc], axis=1)
+companies
+
 # 标签
 tags_c = concept_tags_with_code[["tag_code", "label_name"]].drop_duplicates().reset_index(drop=True)
-tags_c["type"] = "概念标签"
-tags_c.columns = header_dict["tags"]
+tags_c["property"] = "concept"
+tags_c["point_type"] = "tag"
+tags_c.columns = header_dict["point"]
+
+tags_nc = tag_code_dict_nc.copy()
+tags_nc["property"] = "non_concept"
+tags_nc["point_type"] = "tag"
+tags_nc.columns = header_dict["point"]
+
+tags = pd.concat([tags_c, tags_nc], axis=1)
+tags
 
 
-
-#%%
-# 生成neo4j数据库文件并导入库
-print(os.getcwd())
-if(os.getcwd() != "D:\\标签图谱\\标签关系\\Data\\Output"):
-    os.chdir("../Data/Output")
-print(os.getcwd())
-print(os.system("rm -rf graph.db"))
-print(os.system("rm -rf E:/neo4j-community-3.3.4/data/databases/graph.db"))
-cp_results = os.system("cp ./* E:/neo4j-community-3.3.4/import/")
-print(cp_results)
-import_neo4j = 100
-if cp_results == 0 :
-    print("Data copied to neo4j import directory!")
-    import_neo4j = os.system(
-        "neo4j-import --into graph.db --id-type string  \
-        --nodes:Company companies.points  \
-        --nodes:Tag tags.points  \
-        --relationships:LINKED_WITH tag_relation_value.relations  \
-        --relationships:BELONGS_TO company_tag.relations  \
-        --relationships:NODE_OF level_tag_value.relations")
-if import_neo4j == 0:
-    print("Data imported to neo4j!")
-    os.system("cp -r graph.db E:/neo4j-community-3.3.4/data/databases/")
-else:
-    print("Import to neo4j failed!")
-
-os.chdir("D:/标签图谱/标签关系/Tag_graph")
 
