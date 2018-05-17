@@ -43,7 +43,7 @@ def final_count(l1, l2):
 # 数据预处理
 # 公司标签数据
 header_dict = {
-    "point": ["id", "name", "property", "point_type"],
+    "point": ["point_id", "name", "property", "point_type"],
     "relation": ["src_id", "target_id", "rel_value", "rel_type"]
 }
 
@@ -61,16 +61,15 @@ non_concept["count_comps"] = non_concept.tag
 comps_per_nc = non_concept.groupby("tag").agg({"comp_id": lambda x: list(x), "count_comps":"count"}).reset_index()
 comps_per_nc_part = comps_per_nc[comps_per_nc.count_comps >= 50][["tag", "comp_id"]]
 comps_per_nc_part
+
 #%%
 # 非概念标签字典
+comps_per_nc_part.reset_index(drop=True, inplace=True)
 tag_code_dict_nc = comps_per_nc_part.tag.reset_index()
 tag_code_dict_nc.columns = ["tag_code", "label_name"]
 length = len(str(len(tag_code_dict_nc)))
 tag_code_dict_nc.tag_code = tag_code_dict_nc.tag_code.apply(lambda x: str(x).zfill(length))
-
-
-# 公司-非概念标签关系
-
+tag_code_dict_nc
 
 #%% 
 # ******概念部分******
@@ -139,29 +138,11 @@ label_chains = label_chains.drop(['proportion'], axis=1).merge(proportion_reset,
 label_chains.drop_duplicates(inplace=True)
 label_chains.fillna(0.0, inplace=True)
 tag_chains = label_chains[["node_code", "root_code", "proportion"]].copy()
-tag_chains["rel_type"] = "tag_chains"
+tag_chains["rel_type"] = "node_of"
 tag_chains.columns = header_dict["relation"]
-
-
+tag_chains
 #%%
-# 公司和标签关系(company belongs to tag_x -> ... -> tag_1)
-concept_tags.label_name = concept_tags.label_name.apply(lambda x: x.split(":")[1])
-concept_tags_with_code = concept_tags.merge(tag_code_dict_c, how='left', left_on='label_name', right_on='label_name') \
-    .dropna(how='any')
-company_tag_relations_c = concept_tags_with_code.groupby(["comp_id", "label_type_num"]).apply(lambda x: x[x.label_type == x.label_type.max()])
-company_tag_relations_c = company_tag_relations_c[["comp_id", "tag_code"]].drop_duplicates()
-
-company_tag_relations_nc = non_concept.merge(tag_code_dict_nc, how="left", left_on="tag", right_on="label_name").dropna(how="any")
-company_tag_relations_nc = company_tag_relations_nc[["comp_id", "tag_code"]].drop_duplicates()
-
-company_tag_relations = pd.concat([company_tag_relations_c, company_tag_relations_nc], axis=1)
-company_tag_relations["rel_value"] = 0
-company_tag_relations["rel_type"] = "company_tag"
-company_tag_relations.columns = header_dict["company_tag"]
-
-
-#%%
-# 一次性统计两两标签覆盖公司列表的交集、并集数目及比例
+# 非层级概念标签关系
 comps_by_tag_df =  sqlContext.createDataFrame(comps_by_tag_rough_with_code[["tag_code", "comp_id"]])
 comps_by_tag_df2 = comps_by_tag_df.withColumnRenamed("tag_code", "tag_code2").withColumnRenamed("comp_id", "comp_id2")
 all_relation = comps_by_tag_df.crossJoin(comps_by_tag_df2).filter("tag_code != tag_code2")
@@ -181,35 +162,85 @@ label_chains_link.mark = label_chains_link.mark.apply(lambda x: 1)
 print(len(label_chains_link))
 # len(statistic_result_py_df.merge(label_chains_link, how='inner', left_on='tag_link', right_on='node_root_link'))
 tag_relation_with_link = statistic_result_py_df.merge(label_chains_link, how='left', left_on='tag_link', right_on='node_root_link')
-tag_relation_value = tag_relation_with_link[tag_relation_with_link.mark != 1.0][["tag1", "tag2", "intersection", "union", "percentage"]]
-tag_relation_value.percentage = tag_relation_value.percentage.apply(lambda x: np.log2(min(0.000001 + x, 1)))
-target = tag_relation_value.percentage.values.reshape(-1, 1)
+tag_relation_value_c = tag_relation_with_link[tag_relation_with_link.mark != 1.0][["tag1", "tag2", "percentage"]]
+tag_relation_value_c.percentage = tag_relation_value_c.percentage.apply(lambda x: np.log2(min(0.000001 + x, 1)))
+target = tag_relation_value_c.percentage.values.reshape(-1, 1)
 scaler = MinMaxScaler(feature_range=(0.001, 1))
 scaler.fit(target)
-tag_relation_value.percentage = scaler.transform(target)
-tag_relation_value.columns = header_dict["tag_relation_value"]
+tag_relation_value_c.percentage = scaler.transform(target)
+tag_relation_value_c["rel_type"] = "ctag_ctag"
+tag_relation_value_c.columns = header_dict["relation"]
+tag_relation_value_c
+#%% 
+# 公司和标签关系(company belongs to tag_x -> ... -> tag_1)
+concept_tags.label_name = concept_tags.label_name.apply(lambda x: x.split(":")[1])
+concept_tags_with_code = concept_tags.merge(tag_code_dict_c, how='left', left_on='label_name', right_on='label_name') \
+    .dropna(how='any')
+company_tag_relations_c = concept_tags_with_code.groupby(["comp_id", "label_type_num"]).apply(lambda x: x[x.label_type == x.label_type.max()])
+company_tag_relations_c = company_tag_relations_c[["comp_id", "tag_code"]].drop_duplicates().reset_index(drop=True)
 
+company_tag_relations_c
+#%%
+company_tag_relations_nc = non_concept.merge(tag_code_dict_nc, how="left", left_on="tag", right_on="label_name").dropna(how="any")
+company_tag_relations_nc = company_tag_relations_nc[["comp_id", "tag_code"]].drop_duplicates()
+company_tag_relations_nc
+company_tag_relations = pd.concat([company_tag_relations_c, company_tag_relations_nc])
+company_tag_relations["rel_value"] = 0
+company_tag_relations["rel_type"] = "company_tag"
+company_tag_relations.columns = header_dict["relation"]
+company_tag_relations
+
+#%%
+# 非概念标签关系
+link_value_raw = pd.read_csv("../Data/Input/all_links_raw.csv", header=None)
+#%%
+link_value_raw.columns = ["tag1", "tag2", "link_value"]
+tag_code_dict_nc_1 = tag_code_dict_nc.copy().rename(index=str, columns={"tag_code": "code1", "label_name": "tag1"})
+tag_code_dict_nc_2 = tag_code_dict_nc.copy().rename(index=str, columns={"tag_code": "code2", "label_name": "tag2"})
+tag_relation_value_nc_raw = link_value_raw.merge(tag_code_dict_nc_1, how="left", left_on="tag1", right_on="tag1") \
+    .merge(tag_code_dict_nc_2, how="left", left_on="tag2", right_on="tag2")
+#%%
+tag_relation_value_nc_raw.dropna(how="any", inplace=True)
+tag_relation_value_nc_raw.drop(["tag1", "tag2"], axis=1, inplace=True)
+tag_relation_value_nc_raw["code_link"] = tag_relation_value_nc_raw[["code1", "code2"]] \
+    .apply(lambda x: x[0] + "-" + x[1] if int(x[0])>=int(x[1]) else x[1]+ "-" + x[0], axis=1)
+tag_relation_value_nc_raw
+nc_tag_link_no_duplicates = tag_relation_value_nc_raw.drop(["code1", "code2"], axis=1).drop_duplicates()
+nc_tag_link_no_duplicates["code1"] = nc_tag_link_no_duplicates.code_link.apply(lambda x: x.split("-")[0])
+nc_tag_link_no_duplicates["code2"] = nc_tag_link_no_duplicates.code_link.apply(lambda x: x.split("-")[1])
+nc_tag_link_no_duplicates
+
+#%%
+tag_relation_value_nc = nc_tag_link_no_duplicates[["code1", "code2", "link_value"]].copy()
+tag_relation_value_nc.link_value = tag_relation_value_nc.link_value.apply(lambda x: np.log2(min(0.000001 + x, 1)))
+target = tag_relation_value_nc.link_value.values.reshape(-1, 1)
+scaler = MinMaxScaler(feature_range=(0.001, 1))
+scaler.fit(target)
+tag_relation_value_nc.link_value = scaler.transform(target)
+tag_relation_value_nc["rel_type"] = "nctag_nctag"
+tag_relation_value_nc.columns = header_dict["relation"]
+tag_relation_value_nc
 
 
 #%%
 # 节点数据
 # 公司
-companies_c = concept_tags_with_code[["comp_id", "comp_full_name"]]
-companies_c.comp_full_name = companies_c.comp_full_name.apply(lambda x: x.strip().replace("(","（").replace(")","）")).drop_duplicates()
+companies_c = concept_tags_with_code[["comp_id", "comp_full_name"]].drop_duplicates()
+companies_c.comp_full_name = companies_c.comp_full_name.apply(lambda x: x.strip().replace("(","（").replace(")","）"))
 companies_c = companies_c.groupby("comp_id").apply(lambda x: x[x.comp_full_name==x.comp_full_name.max()]).drop_duplicates().reset_index(drop=True)
+companies_c
+#%%
 companies_c["property"] = ""
 companies_c["point_type"] = "company"
 companies_c.columns = header_dict["point"]
-
 companies_nc = non_concept.merge(comps_per_nc_part[["tag"]], how="left", left_on="tag", right_on="tag").dropna(how="any")[["comp_id", "comp_full_name"]] \
     .drop_duplicates()
 companies_nc["property"] = ""
 companies_nc["point_type"] = "company"
 companies_nc.columns = header_dict["point"]
-
-companies = pd.concat([companies_c, companies_nc], axis=1)
-companies
-
+#%%
+companies = pd.concat([companies_c, companies_nc]).drop_duplicates()
+#%%
 # 标签
 tags_c = concept_tags_with_code[["tag_code", "label_name"]].drop_duplicates().reset_index(drop=True)
 tags_c["property"] = "concept"
@@ -221,8 +252,25 @@ tags_nc["property"] = "non_concept"
 tags_nc["point_type"] = "tag"
 tags_nc.columns = header_dict["point"]
 
-tags = pd.concat([tags_c, tags_nc], axis=1)
+tags = pd.concat([tags_c, tags_nc]).drop_duplicates()
+tags.columns = header_dict["point"]
 tags
 
-
-
+#%%
+# 全部点集合
+points = pd.concat([companies, tags]).drop_duplicates().reset_index(drop=True)
+points.columns = header_dict["point"]
+points.reset_index(inplace=True)
+points.rename(index=str, columns={"index": "id"}, inplace=True)
+points.id = points.id.apply(lambda x: x + 1)
+points.to_csv("../Data/Full_data/all_points.csv", index=False, header=None)
+print("Points saved!")
+#%%
+# 边数据整合
+relations = pd.concat([tag_chains, tag_relation_value_c, tag_relation_value_nc, company_tag_relations]).drop_duplicates().reset_index(drop=True)
+relations.columns = header_dict["relation"]
+relations.reset_index(inplace=True)
+relations.rename(index=str, columns={"index": "id"}, inplace=True)
+relations.id = relations.id.apply(lambda x: x + 1)
+relations.to_csv("../Data/Full_data/all_relations.csv", index=False, header=None)
+print("Relations saved!")
