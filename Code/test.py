@@ -16,7 +16,7 @@ from sklearn.preprocessing import MinMaxScaler
 #%%
 file_name = "company_tag_data_raw"
 
-data_raw = pd.read_csv("../Data/Input/" + file_name, sep='\t', dtype={"comp_id":str})[["comp_id", "comp_full_name", "label_name", "classify_id", "label_type", "label_type_num", "src_tags"]]
+data_raw = pd.read_csv("../Data/Input/Tag_graph/" + file_name, sep='\t', dtype={"comp_id":str})[["comp_id", "comp_full_name", "label_name", "classify_id", "label_type", "label_type_num", "src_tags"]]
 data_raw.comp_full_name = data_raw.comp_full_name.apply(lambda x: x.strip().replace("(","（").replace(")","）"))
 non_concept_raw = data_raw[data_raw.classify_id == 4][['label_name', 'comp_id']].drop_duplicates()
 non_concept_raw.columns = ['non_concept_label', 'comp_id']
@@ -81,7 +81,7 @@ target = result.link_value.values.reshape(-1, 1)
 scaler = MinMaxScaler(feature_range=(0.001, 1))
 scaler.fit(target)
 result.link_value = scaler.transform(target)
-result.to_csv("../Data/Output/non_concept_tag.relations", index=False)
+result.to_csv("../Data/Output/Tag_graph/non_concept_tag.relations", index=False)
 
 #%%
 result[result.non_concept_label_y == "皮革"].sort_values(by="link_value")

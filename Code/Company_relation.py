@@ -53,7 +53,7 @@ def final_count2(l1, l2):
 # 数据预处理
 sc = SparkContext.getOrCreate()
 sqlContext=SQLContext(sc)
-data_raw = pd.read_csv("../Data/Input/company_tag_data_raw", sep='\t', dtype={"comp_id":str})
+data_raw = pd.read_csv("../Data/Input/Tag_graph/company_tag_data_raw", sep='\t', dtype={"comp_id":str})
 cols = ["comp_id", "comp_full_name", "label_name", "classify_id", "label_type", "label_type_num", "src_tags"]
 data_raw = data_raw[cols]
 concept_tags = data_raw[data_raw.classify_id != 4].reset_index(drop=True)
@@ -62,7 +62,7 @@ concept_tags.label_name = concept_tags[["label_name", "label_type_num", "src_tag
 
 #%%
 # 概念关系表字典
-level_data_raw = pd.read_csv("../Data/Input/label_code_relation", sep='\t', dtype={"label_root_id":str, "label_note_id":str})
+level_data_raw = pd.read_csv("../Data/Input/Tag_graph/label_code_relation", sep='\t', dtype={"label_root_id":str, "label_note_id":str})
 tag_code_dict = pd.concat([level_data_raw.label_note_name, level_data_raw.label_root_name]).drop_duplicates().reset_index(drop=True)
 tag_code_dict.name = "label_name"
 tag_code_dict = tag_code_dict.reset_index()
@@ -209,5 +209,5 @@ def top_N2(company, n, matrix=matrix_link_value):
 
 #%%
 a = top_N2('10086147958042903546', 50)
-a.to_excel("../Data/Output/a.xlsx")
+a.to_excel("../Data/Output/Tag_graph/a.xlsx")
 a
