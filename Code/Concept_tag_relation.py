@@ -53,7 +53,7 @@ header_dict = {
 #%%
 sc = SparkContext.getOrCreate()
 sqlContext=SQLContext(sc)
-data_raw = pd.read_csv("../Data/Input/company_tag_data_raw", sep='\t', dtype={"comp_id":str})
+data_raw = pd.read_csv("../Data/Input/Tag_graph/company_tag_data_raw", sep='\t', dtype={"comp_id":str})
 cols = ["comp_id", "comp_full_name", "label_name", "classify_id", "label_type", "label_type_num", "src_tags"]
 data_raw = data_raw[cols]
 concept_tags = data_raw[data_raw.classify_id != 4].reset_index(drop=True)
@@ -61,7 +61,7 @@ concept_tags.label_name = concept_tags[["label_name", "label_type_num", "src_tag
     .apply(lambda x: x[2].split("#")[x[1]-1].split("-")[max(x[3]-2, 0)] + ":" + x[0], axis=1)
 #%%
 # 概念关系表字典
-level_data_raw = pd.read_csv("../Data/Input/label_code_relation", sep='\t', dtype={"label_root_id":str, "label_note_id":str})
+level_data_raw = pd.read_csv("../Data/Input/Tag_graph/label_code_relation", sep='\t', dtype={"label_root_id":str, "label_note_id":str})
 tag_code_dict = pd.concat([level_data_raw.label_note_name, level_data_raw.label_root_name]).drop_duplicates().reset_index(drop=True)
 tag_code_dict.name = "label_name"
 tag_code_dict = tag_code_dict.reset_index()
@@ -115,7 +115,7 @@ label_chains.drop_duplicates(inplace=True)
 label_chains.fillna(0.0, inplace=True)
 label_chains_new = label_chains[["node_code", "root_code", "proportion"]].copy()
 label_chains_new.columns = header_dict["level_tag_value"]
-label_chains_new.to_csv("../Data/Output/level_tag_value.relations", index=False)
+label_chains_new.to_csv("../Data/Output/Tag_graph/level_tag_value.relations", index=False)
 print("Data saved!")
 
 #%%
@@ -127,7 +127,7 @@ company_tag_relations = concept_tags_with_code.groupby(["comp_id", "label_type_n
 #%%
 company_tag_relations = company_tag_relations[["comp_id", "tag_code"]].drop_duplicates()
 company_tag_relations.columns = header_dict["company_tag"]
-company_tag_relations.to_csv("../Data/Output/company_tag.relations", index=False)
+company_tag_relations.to_csv("../Data/Output/Tag_graph/company_tag.relations", index=False)
 print("Data saved!")
 
 #%%
@@ -158,7 +158,7 @@ scaler = MinMaxScaler(feature_range=(0.001, 1))
 scaler.fit(target)
 tag_relation_value.percentage = scaler.transform(target)
 tag_relation_value.columns = header_dict["tag_relation_value"]
-tag_relation_value.to_csv("../Data/Output/tag_relation_value.relations", index=False)
+tag_relation_value.to_csv("../Data/Output/Tag_graph/tag_relation_value.relations", index=False)
 print("Data saved!")
 # tag_relation_value
 # statistic_result_df.show()
@@ -180,7 +180,7 @@ scaler.fit(target)
 relative_link["关联强度"] = scaler.transform(target)
 
 relative_link.columns = header_dict["relative_link"]
-relative_link.to_csv("../Data/Output/relative_link.relations", index=False)
+relative_link.to_csv("../Data/Output/Tag_graph/relative_link.relations", index=False)
 print("Data saved!")
 '''
 #%%
@@ -190,19 +190,19 @@ companies = concept_tags_with_code[["comp_id", "comp_full_name"]].drop_duplicate
 companies.comp_full_name = companies.comp_full_name.apply(lambda x: x.strip().replace("(","（").replace(")","）"))
 companies = companies.groupby("comp_id").apply(lambda x: x[x.comp_full_name==x.comp_full_name.max()]).drop_duplicates().reset_index(drop=True)
 companies.columns = header_dict["companies"]
-companies.to_csv("../Data/Output/companies.points", index=False)
+companies.to_csv("../Data/Output/Tag_graph/companies.points", index=False)
 # 标签
 tags = concept_tags_with_code[["tag_code", "label_name"]].drop_duplicates().reset_index(drop=True)
 tags["type"] = "标签类别"
 tags.columns = header_dict["tags"]
-tags.to_csv("../Data/Output/tags.points", index=False)
+tags.to_csv("../Data/Output/Tag_graph/tags.points", index=False)
 print("Data saved!")
 
 #%%
 # 生成neo4j数据库文件并导入库
 print(os.getcwd())
 if(os.getcwd() != "D:\\标签图谱\\标签关系\\Data\\Output"):
-    os.chdir("../Data/Output")
+    os.chdir("../Data/Output/Tag_graph")
 print(os.getcwd())
 print(os.system("rm -rf graph.db"))
 print(os.system("rm -rf E:/neo4j-community-3.3.4/data/databases/graph.db"))
@@ -236,29 +236,29 @@ gephi_headers = {
     "r3": ["Id", "Source", "Target", "Weight", "Type", "Label"],
     "r4": ["Id", "Source", "Target", "Weight", "Type", "Label"]
 }
-p1 = pd.read_csv("../Data/Output/companies.points")
+p1 = pd.read_csv("../Data/Output/Tag_graph/companies.points")
 p1.columns = gephi_headers["points"]
 p1.to_csv("../../可视化/companies.csv", index=False)
 
-p2 = pd.read_csv("../Data/Output/tags.points")
+p2 = pd.read_csv("../Data/Output/Tag_graph/tags.points")
 p2.columns = gephi_headers["points"]
 p2.to_csv("../../可视化/tags.csv", index=False)
 
-r1 = pd.read_csv("../Data/Output/company_tag.relations").reset_index()
+r1 = pd.read_csv("../Data/Output/Tag_graph/company_tag.relations").reset_index()
 r1["Type"] = "DIRECTED"
 r1["Label"] = "BELONGS_TO"
 r1["index"] = r1.Label + "_" + r1["index"].apply(lambda x: str(x))
 r1.columns = gephi_headers["r1"]
 r1.to_csv("../../可视化/company_tag.csv", index=False)
 
-r2 = pd.read_csv("../Data/Output/level_tag_value.relations").reset_index()
+r2 = pd.read_csv("../Data/Output/Tag_graph/level_tag_value.relations").reset_index()
 r2["Type"] = "DIRECTED"
 r2["Label"] = "NODE_OF"
 r2["index"] = r2.Label + "_" + r2["index"].apply(lambda x: str(x))
 r2.columns = gephi_headers["r2"]
 r2.to_csv("../../可视化/level_tag_value.csv", index=False)
 
-r4 = pd.read_csv("../Data/Output/tag_relation_value.relations").reset_index()
+r4 = pd.read_csv("../Data/Output/Tag_graph/tag_relation_value.relations").reset_index()
 r4["Type"] = "UNDIRECTED"
 r4["Label"] = "LINKED_WITH"
 r4["index"] = r4.Label + "_" + r4["index"].apply(lambda x: str(x))

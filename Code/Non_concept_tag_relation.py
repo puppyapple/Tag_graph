@@ -25,7 +25,7 @@ def final_count(l1, l2):
     
 
 file_name = "company_tag_data_non_concept"
-data_raw = pd.read_csv("../Data/Input/" + file_name, sep='\t', dtype={"comp_id": str, "comp_full_name": str, "key_word": str})[["comp_id", "comp_full_name", "key_word"]]
+data_raw = pd.read_csv("../Data/Input/Tag_graph/" + file_name, sep='\t', dtype={"comp_id": str, "comp_full_name": str, "key_word": str})[["comp_id", "comp_full_name", "key_word"]]
 data_raw.dropna(subset=["comp_id", "key_word"], inplace=True)
 data_raw = data_raw[data_raw.key_word != ""]
 
@@ -64,7 +64,7 @@ while interval_size*i < record_len:
 	tmp["link_value"] = tmp[["int_id_x", "int_id_y"]].apply(lambda x: final_count(x[0], x[1]), axis=1)
 	print("calculation done")
 	result_part = tmp[(tmp.tag_x != tmp.tag_y) & (tmp.link_value > 0)][["tag_x", "tag_y", "link_value"]]
-	result_part.to_csv("../Data/Output/part_result_%d.relations" % i, index=False, header=None)
+	result_part.to_csv("../Data/Output/Tag_graph/part_result_%d.relations" % i, index=False, header=None)
 	end_time = datetime.datetime.now()
 	print("### Part %d finished at %s (time used: %.3f seconds) ###" % (i, end_time.strftime('%H:%M:%S'), (end_time - start_time).total_seconds()))
 	i += 1

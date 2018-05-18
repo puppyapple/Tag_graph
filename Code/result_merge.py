@@ -50,7 +50,7 @@ header_dict = {
 #%% 
 # ******非概念部分******
 file_name_nc = "company_tag_data_non_concept"
-data_raw = pd.read_csv("../Data/Input/" + file_name_nc, sep='\t', dtype={"comp_id": str, "comp_full_name": str, "key_word": str})[["comp_id", "comp_full_name", "key_word"]]
+data_raw = pd.read_csv("../Data/Input/Tag_graph/" + file_name_nc, sep='\t', dtype={"comp_id": str, "comp_full_name": str, "key_word": str})[["comp_id", "comp_full_name", "key_word"]]
 data_raw.dropna(subset=["comp_id", "key_word"], inplace=True)
 data_raw = data_raw[data_raw.key_word != ""]
 
@@ -77,7 +77,7 @@ tag_code_dict_nc
 sc = SparkContext.getOrCreate()
 sqlContext=SQLContext(sc)
 file_name_c = "company_tag_data_concept"
-data_raw_c = pd.read_csv("../Data/Input/" + file_name_c, sep='\t', dtype={"comp_id":str})
+data_raw_c = pd.read_csv("../Data/Input/Tag_graph/" + file_name_c, sep='\t', dtype={"comp_id":str})
 cols = ["comp_id", "comp_full_name", "label_name", "classify_id", "label_type", "label_type_num", "src_tags"]
 data_raw_c = data_raw_c[cols]
 concept_tags = data_raw_c[data_raw_c.classify_id != 4].reset_index(drop=True)
@@ -85,7 +85,7 @@ concept_tags.label_name = concept_tags[["label_name", "label_type_num", "src_tag
     .apply(lambda x: x[2].split("#")[x[1]-1].split("-")[max(x[3]-2, 0)] + ":" + x[0], axis=1)
 #%%
 # 概念关系表字典
-level_data_raw_c = pd.read_csv("../Data/Input/label_code_relation", sep='\t', dtype={"label_root_id":str, "label_note_id":str})
+level_data_raw_c = pd.read_csv("../Data/Input/Tag_graph/label_code_relation", sep='\t', dtype={"label_root_id":str, "label_note_id":str})
 tag_code_dict_c = pd.concat([level_data_raw_c.label_note_name, level_data_raw_c.label_root_name]).drop_duplicates().reset_index(drop=True)
 tag_code_dict_c.name = "label_name"
 tag_code_dict_c = tag_code_dict_c.reset_index()
@@ -192,7 +192,7 @@ company_tag_relations
 
 #%%
 # 非概念标签关系
-link_value_raw = pd.read_csv("../Data/Input/all_links_raw.csv", header=None)
+link_value_raw = pd.read_csv("../Data/Input/Tag_graph/all_links_raw.csv", header=None)
 #%%
 link_value_raw.columns = ["tag1", "tag2", "link_value"]
 tag_code_dict_nc_1 = tag_code_dict_nc.copy().rename(index=str, columns={"tag_code": "code1", "label_name": "tag1"})
