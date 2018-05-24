@@ -53,7 +53,7 @@ def final_count2(l1, l2):
 # 数据预处理
 sc = SparkContext.getOrCreate()
 sqlContext=SQLContext(sc)
-data_raw = pd.read_csv("../Data/Input/Tag_graph/company_tag_data_raw", sep='\t', dtype={"comp_id":str})
+data_raw = pd.read_csv("../Data/Input/Tag_graph/company_tag_data_concept", sep='\t', dtype={"comp_id":str})
 cols = ["comp_id", "comp_full_name", "label_name", "classify_id", "label_type", "label_type_num", "src_tags"]
 data_raw = data_raw[cols]
 concept_tags = data_raw[data_raw.classify_id != 4].reset_index(drop=True)
