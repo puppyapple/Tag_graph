@@ -22,7 +22,7 @@ port = config['ASSESSMENT']['port']
 charset = config['ASSESSMENT']['charset']
 db = pymysql.connect(host=host, user=user, password=password, db=database, port=int(port), charset=charset)
 config.read("../Data/Input/Tag_graph/filter.conf")
-filter_list = config['FILTER']['filter_list'].split(",")
+ctag_keep_list = config['FILTER']['filter_list'].split(",")
 
 header_dict = {
     "point": ["point_id", "name", "property", "point_type"],
@@ -30,7 +30,7 @@ header_dict = {
 }
 
 # 基本数据处理及生成
-def comp_tag(new_result="company_tag_info_latest", old_result="company_tag", label_code_relation="label_code_relation", filter_list=filter_list, db=db):
+def comp_tag(new_result="company_tag_info_latest", old_result="company_tag", label_code_relation="label_code_relation", keep_list=False, db=db):
     # 从库中读取数据
     sql_new_result = "select * from %s" % new_result
     sql_old_result = "select * from %s" % old_result
@@ -38,22 +38,54 @@ def comp_tag(new_result="company_tag_info_latest", old_result="company_tag", lab
     data_raw_new = pd.read_sql(sql_new_result, con=db)
     data_raw_old_full = pd.read_sql(sql_old_result, con=db)
     label_chains_raw = pd.read_sql(sql_label_code_relation, con=db)
+    data_raw_new.fillna("", inplace=True)
+    data_raw_old_full.fillna("", inplace=True)
+    # 生成公司id-name字典保存
+    comp_id_name = pd.concat([data_raw_new[["comp_id", "comp_full_name"]], data_raw_old_full[["comp_id", "comp_full_name"]]]).drop_duplicates()
+    # print(comp_id_name.head(10))
+    # comp_id_name = comp_id_name[comp_id_name.comp_id.isin(comps_to_concern)]
+    comp_id_name_dict = dict(zip(comp_id_name.comp_id, comp_id_name.comp_full_name))
+    comp_id_name_dict_file_name = "../Data/Output/Tag_graph/comp_id_name_dict.pkl"
+    comp_id_name_dict_file = open(comp_id_name_dict_file_name, "wb")
+    pickle.dump(comp_id_name_dict, comp_id_name_dict_file)
+    comp_id_name_dict_file.close()
+    
+    '''
+    ###############################
+    * 公司id-名称储存用作导入图数据库 *
+    ###############################
+    '''
+    company_points = comp_id_name[["comp_id", "comp_full_name"]].copy()
+    company_points.comp_full_name = company_points.comp_full_name.apply(lambda x: x.strip().replace("(","（").replace(")","）"))
+    company_points.drop_duplicates(inplace=True)
+    company_points["property"] = ""
+    company_points["point_type"] = "company"
+    company_points.columns = header_dict.get("point")
     
     # 全部概念标签的列表
     ctag_full_list = set(label_chains_raw.label_note_name).union(set(label_chains_raw.label_root_name))
+    # chains_to_keep = label_chains_raw[label_chains_raw.label_root_name.isin(keep_list)]
+    # tags_to_keep = set(chains_to_keep.label_note_name).union(set(chains_to_keep.label_root_name))
+    
+    if keep_list == True:
+        keep_list = ctag_keep_list
+    else:
+        keep_list = ctag_full_list
     
     # 根据输入的公司概念和非概念标记源数据，分别得到完整的公司-概念标签、公司-非概念标签
     data_raw_new.dropna(subset=["comp_id", "label_name"], inplace=True)
     cols = ["comp_id", "comp_full_name", "label_name", "classify_id", "label_type", "label_type_num", "src_tags", "remarks"]
     data_raw_new = data_raw_new[data_raw_new.label_name != ''][cols].copy()
     
-    # 将技术标签对应的标签作处理，在标签前加上前缀以示区别（和非概念标签）
-    data_raw_new.label_name = data_raw_new[["label_name", "remarks"]].apply(lambda x: "技术标签_" + x[0] if x[1] == "1" and x[0] not in ctag_full_list else x[0], axis=1)
+    # 将技术标签对应的标签作处理，在标签前加上前缀以示区别（和非概念标签），之后由分析师方面统一解决
+    data_raw_new.label_name = data_raw_new[["label_name", "remarks"]].apply(lambda x: "技术标签_" + x[0] if x[1] == "1" else x[0], axis=1)
     
     # 过滤掉进行中的产业链话题等关联的公司
-    comp_ctag_table_all_infos = data_raw_new[data_raw_new.classify_id != 4].reset_index(drop=True)
-    comps_to_concern = list(comp_ctag_table_all_infos[comp_ctag_table_all_infos.label_name.isin(filter_list)]["comp_id"].drop_duplicates())
-    comp_ctag_table = comp_ctag_table_all_infos[comp_ctag_table_all_infos.comp_id.isin(comps_to_concern)][["comp_id", "label_name"]].reset_index(drop=True)
+    comp_ctag_table_all_infos_raw = data_raw_new[data_raw_new.classify_id != 4].reset_index(drop=True)
+    comp_ctag_table_all_infos = comp_ctag_table_all_infos_raw.copy()
+    comp_ctag_table_all_infos.src_tags = comp_ctag_table_all_infos[["label_type_num", "src_tags"]].apply(lambda x: x[1].split("#")[x[0] - 1], axis=1)
+    comp_ctag_table_all_infos = comp_ctag_table_all_infos[comp_ctag_table_all_infos.src_tags.apply(lambda x: x.split("-")[0]).isin(keep_list)]
+    comp_ctag_table = comp_ctag_table_all_infos[["comp_id", "label_name"]].reset_index(drop=True)
     
     # 概念标签全集列表，加上一列1作为标记用
     # ctag_list = comp_ctag_table_all_infos.label_name.drop_duplicates().reset_index()
@@ -79,27 +111,7 @@ def comp_tag(new_result="company_tag_info_latest", old_result="company_tag", lab
     # 取没有概念标记的作为非概念标签的全集
     comp_nctag_table = data_raw_nctag_flatted[~data_raw_nctag_flatted.label_name.isin(ctag_full_list)].reset_index(drop=True)
 
-    # 生成公司id-name字典保存
-    comp_id_name = pd.concat([data_raw_new[["comp_id", "comp_full_name"]], data_raw_old_full[["comp_id", "comp_full_name"]]]).drop_duplicates()
-    comp_id_name = comp_id_name[comp_id_name.comp_id.isin(comps_to_concern)]
-    comp_id_name_dict = dict(zip(comp_id_name.comp_id, comp_id_name.comp_full_name))
-    comp_id_name_dict_file_name = "../Data/Output/Tag_graph/comp_id_name_dict.pkl"
-    comp_id_name_dict_file = open(comp_id_name_dict_file_name, "wb")
-    pickle.dump(comp_id_name_dict, comp_id_name_dict_file)
-    comp_id_name_dict_file.close()
-    
-    
-    '''
-    ###############################
-    * 公司id-名称储存用作导入图数据库 *
-    ###############################
-    '''
-    company_points = comp_id_name[["comp_id", "comp_full_name"]].copy().drop_duplicates()
-    company_points["property"] = ""
-    company_points["point_type"] = "company"
-    company_points.columns = header_dict.get("point")
-    
-    return (comp_ctag_table, comp_nctag_table, company_points, label_chains_raw)
+    return (comp_ctag_table, comp_nctag_table, company_points, label_chains_raw, comp_ctag_table_all_infos_raw)
 
 
 def data_aggregator(comp_ctag_table, comp_nctag_table, company_points, label_chains_raw, nctag_filter_num=50):
@@ -109,10 +121,10 @@ def data_aggregator(comp_ctag_table, comp_nctag_table, company_points, label_cha
     comp_id_dict = comp_tag_table_all["comp_id"].drop_duplicates().reset_index(drop=True)
     comp_id_dict = comp_id_dict.reset_index()
     comp_id_dict.rename(index=str, columns={"index": "comp_int_id"}, inplace=True)
-    comp_ctag_table = comp_ctag_table.merge(comp_id_dict, how="left", left_on="comp_id", right_on="comp_id") \
-        .drop(["comp_id"], axis=1)
-    comp_nctag_table = comp_nctag_table.merge(comp_id_dict, how="left", left_on="comp_id", right_on="comp_id") \
-        .drop(["comp_id"], axis=1)
+    comp_ctag_table = comp_ctag_table.merge(comp_id_dict, how="left", left_on="comp_id", right_on="comp_id")
+        #.drop(["comp_id"], axis=1)
+    comp_nctag_table = comp_nctag_table.merge(comp_id_dict, how="left", left_on="comp_id", right_on="comp_id")
+        #.drop(["comp_id"], axis=1)
     comp_total_num = len(comp_id_dict)
 
     # 为每一个标签赋予一个UUID，这个方式下，只要NAMESPACE不变，重复生成的也会是同一个UUID，避免了增量更新的麻烦
@@ -143,13 +155,14 @@ def data_aggregator(comp_ctag_table, comp_nctag_table, company_points, label_cha
     * 公司与标签关系储存用作入图数据库 *
     ###############################
     '''
-    comp_ctag_table.drop(["label_name"], axis=1, inplace=True)
-    comp_nctag_table.drop(["label_name"], axis=1, inplace=True)
-    comp_tag_relations = pd.concat([comp_ctag_table, comp_nctag_table])
+    comp_tag_relations = pd.concat([comp_ctag_table[["comp_id", "tag_uuid"]], comp_nctag_table[["comp_id", "tag_uuid"]]])
     comp_tag_relations["rel_value"] = 1.0
     comp_tag_relations["rel_type"] = "company_tag"
     comp_tag_relations.columns = header_dict.get("relation")
     print("company-tag link count: %d" % len(comp_tag_relations))
+    
+    comp_ctag_table.drop(["label_name", "comp_id"], axis=1, inplace=True)
+    comp_nctag_table.drop(["label_name", "comp_id"], axis=1, inplace=True)
     
     # 将标签对应的hashcode以字典形式存成二进制文件
     tag_dict = dict(zip(tag_list.label_name, tag_list.tag_uuid))
@@ -196,6 +209,7 @@ def data_aggregator(comp_ctag_table, comp_nctag_table, company_points, label_cha
     label_chains_link = label_chains_link[["node_code", "root_code", "distance"]].copy()
     label_chains_link_reverse = label_chains_link[["root_code", "node_code", "distance"]].copy()
     label_chains_link_reverse.columns = ["node_code", "root_code", "distance"]
+    label_chains_link_reverse.distance = - label_chains_link_reverse.distance
     label_chains_all = pd.concat([label_chains_link, label_chains_link_reverse])
     label_self = label_chains_all.node_code.drop_duplicates().reset_index().rename(index=str, columns={"index": "distance"}, inplace=False)
     label_self.distance = 0
@@ -258,9 +272,12 @@ def ctag_relation(ctag_comps_aggregated):
     ctag_position = pickle.load(open("../Data/Output/Tag_graph/ctag_position.pkl", "rb"))
     label_chains_all = pd.DataFrame.from_dict(ctag_position, orient="index").reset_index()
     label_chains_all.columns = ["node_link", "distance"]
-    label_chains_all = label_chains_all[label_chains_all.distance != 1]
-    ctag_ctag_relations = ctag_ctag[~ctag_ctag.tag_link.isin(label_chains_all.node_link)][["tag_uuid_x", "tag_uuid_y", "link_value"]].copy()
+    label_chains_drop = label_chains_all[label_chains_all.distance != 1]
+    node_chains = label_chains_all[label_chains_all.distance == 1]
+    ctag_ctag_relations = ctag_ctag[~ctag_ctag.tag_link.isin(label_chains_drop.node_link)][["tag_uuid_x", "tag_uuid_y", "link_value", "tag_link"]].copy()
     ctag_ctag_relations["rel_type"] = "ctag_ctag"
+    ctag_ctag_relations.loc[ctag_ctag_relations.tag_link.isin(node_chains.node_link), "rel_type"] = "node_of"
+    ctag_ctag_relations.drop(["tag_link"], axis=1, inplace=True)
     ctag_ctag_relations.columns = header_dict.get("relation")
     print("ctag link records count after filterage: %d" % len(ctag_ctag_relations))
     return ctag_ctag_relations
@@ -302,13 +319,13 @@ def nctag_nctag(nctag_comps_aggregated, nctag_idf):
     nctag_comps_aggregated = nctag_comps_aggregated.merge(nctag_idf, how="left", left_on="tag_uuid", right_on="tag_uuid")
     nctag_nctag = nctag_comps_aggregated.merge(nctag_comps_aggregated, on="key")
     record_len = len(nctag_nctag)
-    interval_size = record_len // 10
+    interval_size = record_len // 20
     i = 0
     # 由于非概念标签之间的计算量级较大，服务器内存不足，因此采用分块计算、最后融合的方式
     while interval_size*i < record_len:
         start_time = datetime.datetime.now()
         print("### start nctag-nctag part %d at %s ###" % (i, start_time.strftime('%H:%M:%S')))
-        tmp = nctag_nctag[interval_size*i:min(interval_size * (i + 1), record_len)]
+        tmp = nctag_nctag[interval_size*i:min(interval_size * (i + 1), record_len)].copy()
         tmp["link_value"] = tmp[["comp_int_id_x", "comp_int_id_y", "idf_x", "idf_y"]].apply(lambda x: x[2] * x[3] * final_count(x[0], x[1]), axis=1)
         result_part = tmp[tmp.link_value != 0][["tag_uuid_x", "tag_uuid_y", "link_value"]]
         result_part.to_csv("../Data/Output/Tag_graph/temp_result/part_result_%d.relations" % i, index=False, header=None)
@@ -340,25 +357,55 @@ def nctag_nctag(nctag_comps_aggregated, nctag_idf):
     print("nctag-nctag link records count: %d" % len(nctag_nctag_relations))
     return nctag_nctag_relations
 
+
+def concept_tree_property(comp_ctag_table_all_infos):   
+    tag_code_dict = pd.DataFrame.from_dict(pickle.load(open("../Data/Output/Tag_graph/tag_dict.pkl", "rb")), orient="index").reset_index()
+    tag_code_dict.columns = ["label_name", "tag_code"]
+    com_ctag_with_code = comp_ctag_table_all_infos.merge(tag_code_dict, how="left", left_on="label_name", right_on="label_name")
+    # 每个公司的概念最底层概念标签列表：判断上下游、同链条、同标签
+    comp_bottom_ctag = com_ctag_with_code.groupby(["comp_id", "label_type_num"]).apply(lambda x: x[x.label_type == x.label_type.max()])[["comp_id", "tag_code", "comp_full_name"]].drop_duplicates().reset_index(drop=True)
+    comp_bottom_ctag.columns = ["comp_id", "bottom_ctag", "comp_full_name"]
+    comp_bottom_ctag = comp_bottom_ctag.groupby("comp_id").agg({"bottom_ctag": lambda x: set(x)}).reset_index()
+    # 每个公司的顶级概念标签列表：判断同产业“树”
+    comp_top_ctag = com_ctag_with_code.groupby(["comp_id", "label_type_num"]).apply(lambda x: x[x.label_type == x.label_type.min()])[["comp_id", "tag_code", "comp_full_name"]].drop_duplicates().reset_index(drop=True)
+    comp_top_ctag.columns = ["comp_id", "top_ctag", "comp_full_name"]
+    comp_top_ctag = comp_top_ctag.groupby("comp_id").agg({"top_ctag": lambda x: set(x)}).reset_index()
+    concept_tree_property = comp_top_ctag.merge(comp_bottom_ctag, how="left", left_on="comp_id", right_on="comp_id")
+    concept_tree_property.index = concept_tree_property.comp_id
+    concept_tree_property.drop(["comp_id"], axis=1, inplace=True)
+    concept_tree_property_dict = concept_tree_property.to_dict(orient='index')
+    concept_tree_property_dict_file_name = "../Data/Output/Tag_graph/concept_tree_property.pkl"
+    concept_tree_property_dict_file = open("../Data/Output/Tag_graph/concept_tree_property.pkl", "wb")
+    pickle.dump(concept_tree_property_dict, concept_tree_property_dict_file)
+    concept_tree_property_dict_file.close()
+    return concept_tree_property
+
+
 # 需要导入neo4j的数据进行合并
-def neo4j_merge(tag_points, company_points, ctag_ctag_relations, ctag_nctag_relations, nctag_nctag_relations):
+def neo4j_merge(tag_points, company_points, comp_tag_relations, ctag_ctag_relations, ctag_nctag_relations, nctag_nctag_relations):
     # 全部点集合
     points = pd.concat([tag_points, company_points]).drop_duplicates().reset_index(drop=True)
     points.columns = header_dict["point"]
     points.reset_index(drop=True, inplace=True)
     points.rename(index=str, columns={"index": "id"}, inplace=True)
+    points.fillna("", inplace=True)
+    points.drop_duplicates(subset=["point_id"], inplace=True)
+    points = points.groupby("point_id").agg("min").reset_index()
     # points.id = points.id.apply(lambda x: x + 1)
     points.to_csv("../Data/Output/Tag_graph/all_points.csv", index=False, header=None)
     print("Points saved!")
 
     # 边数据整合
-    relations = pd.concat([ctag_ctag_relations, ctag_nctag_relations, nctag_nctag_relations]) \
+    all_relations = pd.concat([ctag_ctag_relations, ctag_nctag_relations, nctag_nctag_relations, comp_tag_relations]) \
         .drop_duplicates().reset_index(drop=True)
-    relations.columns = header_dict["relation"]
-    relations.reset_index(drop=True, inplace=True)
-    relations.rename(index=str, columns={"index": "id"}, inplace=True)
-    # relations.id = relations.id.apply(lambda x: x + 1)
-    relations.to_csv("../Data/Output/Tag_graph/all_relations.csv", index=False, header=None)
+    all_relations.columns = header_dict["relation"]
+    all_relations["link"] = all_relations[["src_id", "target_id"]].apply(lambda x: "-".join(sorted([str(x[0]), str(x[1])])), axis=1)
+    all_relations.drop_duplicates(subset=["link"], inplace=True)
+    all_relations.drop(["link"], axis=1, inplace=True)
+    all_relations = all_relations[["src_id", "target_id", "rel_value", "rel_type"]].copy()
+    all_relations.drop(index=all_relations[all_relations.src_id == all_relations.target_id].index)
+    all_relations.reset_index(drop=True, inplace=True)
+    all_relations.to_csv("../Data/Output/Tag_graph/all_relations.csv", index=False, header=None)
     print("Relations saved!")
     return 0
 
