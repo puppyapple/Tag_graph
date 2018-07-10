@@ -112,14 +112,24 @@ def data_aggregator(comp_tag, label_chains_raw, nctag_filter_num=(150, 1000000))
     comp_id_dict = comp_id_dict.reset_index()
     comp_id_dict.rename(index=str, columns={"index": "comp_int_id"}, inplace=True)
     comp_tag = comp_tag.merge(comp_id_dict, how="left", left_on="comp_id", right_on="comp_id")
-    comp_total_num = len(comp_id_dict)
+
+
+    # 将标签数据各自按照标签id进行聚合
+    comp_tag["count_comps"] = 1
+    tag_comps_aggregated = comp_tag.groupby("label_name") \
+        .agg({"comp_int_id": lambda x: set(x), "count_comps": "count", "type": max}).reset_index()
+    tag_comps_aggregated = tag_comps_aggregated[((tag_comps_aggregated.count_comps >= nctag_filter_num[0]) \
+                                                 & (tag_comps_aggregated.count_comps <= nctag_filter_num[1])) \
+                                                 | (tag_comps_aggregated.type == 0)]\
+                                                 [["label_name", "comp_int_id"]].reset_index(drop=True)
 
     # 为每一个标签赋予一个UUID，这个方式下，只要NAMESPACE不变，重复生成的也会是同一个UUID，避免了增量更新的麻烦
-    tag_list = comp_tag["label_name"].drop_duplicates().reset_index(drop=True)
+    tag_list = tag_comps_aggregated["label_name"].drop_duplicates().reset_index(drop=True)
     tag_list = tag_list.reset_index()
     tag_list.rename(index=str, columns={"index": "tag_uuid"}, inplace=True)
     tag_list.tag_uuid = tag_list.label_name.apply(lambda x: uuid.uuid5(uuid.NAMESPACE_URL, x).hex)
     comp_tag = comp_tag.merge(tag_list, how="left", left_on="label_name", right_on="label_name")
+    tag_comps_aggregated = tag_comps_aggregated.merge(tag_list, how="left", left_on="label_name", right_on="label_name")
     
     '''
     ###############################
@@ -142,7 +152,7 @@ def data_aggregator(comp_tag, label_chains_raw, nctag_filter_num=(150, 1000000))
     comp_tag_relations.columns = header_dict.get("relation")
     print("company-tag link count: %d" % len(comp_tag_relations))
     
-    comp_tag.drop(["label_name", "comp_id"], axis=1, inplace=True)
+    # comp_tag.drop(["label_name", "comp_id"], axis=1, inplace=True)
 
     
     # 将标签对应的hashcode以字典形式存成二进制文件
@@ -150,28 +160,20 @@ def data_aggregator(comp_tag, label_chains_raw, nctag_filter_num=(150, 1000000))
     tag_dict_file = open("../Data/Output/Tag_graph/tag_dict.pkl", "wb")
     pickle.dump(tag_dict, tag_dict_file)
     tag_dict_file.close()
-
-    # 将标签数据各自按照标签id进行聚合
-    comp_tag["count_comps"] = 1
-    tag_comps_aggregated = comp_tag.groupby("tag_uuid") \
-        .agg({"comp_int_id": lambda x: set(x), "count_comps": "count", "type": max}).reset_index()
-    tag_comps_aggregated = tag_comps_aggregated[((tag_comps_aggregated.count_comps >= nctag_filter_num[0]) \
-                                                 & (tag_comps_aggregated.count_comps <= nctag_filter_num[1])) \
-                                                 | (tag_comps_aggregated.type == 0)]\
-                                                 [["tag_uuid", "comp_int_id"]].reset_index(drop=True)
-
-    comp_tags_file_name = "../Data/Output/Tag_graph/comp_tags_all.pkl"
-    comp_tags_aggregated = comp_ctag_table.pivot_table(index="comp_id", columns=["type"], aggfunc={"tag_uuid": lambda x: set(x)}).reset_index()
+    
+    comp_tags_aggregated = comp_tag.pivot_table(index="comp_id", columns=["type"], aggfunc={"tag_uuid": lambda x: set(x)})
     comp_tags_aggregated.columns = comp_tags_aggregated.columns.levels[1]
     comp_tags_aggregated.rename(index=int, columns={0: "ctag", 1: "nctag"}, inplace=True)
+    comp_tags_aggregated.reset_index(inplace=True)
     
     comp_tags_aggregated.fillna(0, inplace=True)
-    comp_tags_aggregated.ctag = comp_tags_aggregated.ctag.apply(lambda x: {} if x == 0 else x)
-    comp_tags_aggregated.nctag = comp_tags_aggregated.nctag.apply(lambda x: {} if x == 0 else x)
-    comp_tags_aggregated["tag_infos"] = comp_tags_aggregated[["ctag", "nctag"]].apply(lambda x: {**(x[0]), **(x[1])}, axis=1)
-    comp_tags_aggregated = comp_tags_aggregated.merge(comp_id_dict, how="left", left_on="comp_int_id", right_on="comp_int_id")
-    comp_tags_aggregated.drop(["ctag", "nctag", "comp_int_id"], axis=1, inplace=True)
+    comp_tags_aggregated.ctag = comp_tags_aggregated.ctag.apply(lambda x: set([]) if x == 0 else x)
+    comp_tags_aggregated.nctag = comp_tags_aggregated.nctag.apply(lambda x: set([]) if x == 0 else x)
+    comp_tags_aggregated["tag_infos"] = comp_tags_aggregated[["ctag", "nctag"]].apply(lambda x: {"ctag": x[0], "nctag": x[1]}, axis=1)
+    # comp_tags_aggregated = comp_tags_aggregated.merge(comp_id_dict, how="left", left_on="comp_int_id", right_on="comp_int_id")
+    comp_tags_aggregated.drop(["ctag", "nctag"], axis=1, inplace=True)
     comp_tags_all_dict = dict(zip(comp_tags_aggregated.comp_id, comp_tags_aggregated.tag_infos))
+    comp_tags_file_name = "../Data/Output/Tag_graph/comp_tags_all.pkl"
     comp_tags_all_file = open(comp_tags_file_name, "wb")
     pickle.dump(comp_tags_all_dict, comp_tags_aggregated)
     comp_tags_all_file.close()
@@ -200,7 +202,8 @@ def data_aggregator(comp_tag, label_chains_raw, nctag_filter_num=(150, 1000000))
     ctag_position_file = open(ctag_position_file_name, "wb")
     pickle.dump(ctag_position_dict, ctag_position_file)
     ctag_position_file.close()
-    return (tag_comps_aggregated, tag_points, comp_tag_relations, comp_total_num)
+    del(comp_tag)
+    return (tag_comps_aggregated, tag_points, comp_tag_relations)
 
 ## 标签关系计算
 def final_count(l1, l2):
@@ -290,7 +293,7 @@ def neo4j_merge(tag_points, company_points, comp_tag_relations, tag_tag_relation
     print("Points saved!")
 
     # 边数据整合
-    all_relations = pd.concat([ctag_ctag_relations, ctag_nctag_relations, nctag_nctag_relations, comp_tag_relations]) \
+    all_relations = pd.concat([tag_tag_relations, comp_tag_relations]) \
         .drop_duplicates().reset_index(drop=True)
     all_relations.columns = header_dict["relation"]
     all_relations["link"] = all_relations[["src_id", "target_id"]].apply(lambda x: "-".join(sorted([str(x[0]), str(x[1])])), axis=1)
