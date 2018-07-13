@@ -321,7 +321,7 @@ def tag_tag2():
         .withColumnRenamed("tag_uuid", "tag_uuid2") \
         .crossJoin(tag_comps_aggregated) \
         .rdd.map(lambda x: (x[2], x[5]) + (x[1] + x[4], final_count(set(x[0]), set(x[3])))) \
-        .distinct().toDF(["tag1", "tag2", "link_type", "link_value"])
+        .distinct().toDF(["tag1", "tag2", "link_type", "link_value"]).filter("link_value > 0")
     tag_tag = result.toPandas()
     tag_tag.columns = ["tag1", "tag2", "link_type", "link_value"]
     tag_tag.link_value = nctag_nctag.link_value.apply(lambda x: np.log2(min(0.000001 + x, 1)))
@@ -329,7 +329,7 @@ def tag_tag2():
     tag_tag = tag_tag[["tag1", "tag2", "link_type", "link_value"]].drop_duplicates()
     tag_tag["tag_link"] = tag_tag.tag1 + "-" + tag_tag.tag2
     tag_tag_dict = dict(zip(tag_tag.tag_link, (tag_tag.link_value, tag_tag.link_type)))
-    tag_tagg_file_name = "../Data/Output/Tag_graph/tag_tag.pkl"
+    tag_tag_file_name = "../Data/Output/Tag_graph/tag_tag.pkl"
     tag_tag_file = open(tag_tag_file_name, "wb")
     pickle.dump(tag_tag_dict, tag_tag_file)
     tag_tag_file.close()
