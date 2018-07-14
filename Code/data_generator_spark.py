@@ -28,14 +28,12 @@ points_table = "wuzj_spark_points"
 relations_table = "wuzj_spark_relations"
 
 # 基本数据处理及生成
-def comp_tag(new_result="company_tag_info_latest0703", old_result="company_tag", label_code_relation="label_code_relation", keep_list=False):
+def comp_tag(new_result="spider_clean_sum.company_tag_new", label_code_relation="label_code_relation", keep_list=False):
     # 从库中读取数据
     sql_new_result = "select comp_id, comp_full_name, label_name, classify_id, label_type, label_type_num from %s" % new_result
-    sql_old_result = "(select comp_id, comp_full_name, key_word from %s) t" % old_result
     sql_label_code_relation = "(select * from %s) t" % label_code_relation
      
     data_raw_new = spark.sql(sql_new_result).dropna(how="any")
-    data_raw_old_full = sqlContext.read.jdbc(url, sql_old_result, properties).dropna(how="any").withColumnRenamed("key_word", "label_name")
     label_chains_raw = sqlContext.read.jdbc(url, sql_label_code_relation, properties).dropna(how="any")
         .withColumnRenamed("label_note_name", "label_node_name") \
         .withColumnRenamed("label_type_note":"label_type_node")
@@ -72,16 +70,11 @@ def comp_tag(new_result="company_tag_info_latest0703", old_result="company_tag",
     # 新系统下结果中的公司-非概念标签
     data_raw_nctag_p1 = data_raw_new[data_raw_new.classify_id == 4][["comp_id", "label_name"]]
 
-    # 读取旧版数据，只取其中的非概念标签（概念标签无法确定其层级和产业链（复用））
-    data_raw_nctag_p2_raw = data_raw_old_full[data_raw_old_full.key_word != ""][["comp_id", "label_name"]]
-
-    # 新版的非概念标签和旧版整体数据拼接后进行split和flatten
-    data_raw_nctag_p2 = data_raw_nctag_p2_raw \
-        .rdd.flatMap(lambda x: [(x[0], t) for t in x[1].split(",") if t != ""]).toDF(["comp_id", "label_name"]).drop_duplicates()
-
     # 取没有概念标记的作为非概念标签的全集
-    comp_nctag_table = data_raw_nctag_p1.union(data_raw_nctag_p2)
-    comp_nctag_table = comp_nctag_table[~comp_nctag_table.label_name.isin(ctag_full_list)].withColumn("type", F.lit(1))
+    comp_nctag_table = data_raw_new[(data_raw_new.classify_id == 4) & (~data_raw_new.label_name.isin(ctag_full_list))] \
+        [["comp_id", "label_name"]] \
+        .withColumn("type", F.lit(1))
+
     comp_tag = comp_ctag_table.union(comp_nctag_table)
     # data_raw_new.unpersist()
     return (comp_tag, label_chains_raw, company_points)
@@ -220,4 +213,6 @@ def tag_tag2(tag_comps_aggregated, label_chains_link):
     return 0
 
 
-
+if __name__ == "__main__":
+    comp_tag, label_chains_raw, company_points = comp_tag()
+    
