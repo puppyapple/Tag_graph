@@ -10,6 +10,7 @@ from pyspark import SQLContext, SparkContext
 from pyspark.sql import SparkSession
 from pyspark.ml.feature import MinMaxScaler
 from pyspark.sql.functions import udf
+from pyspark.ml.linalg import Vectors
 sc = SparkContext.getOrCreate()
 sqlContext=SQLContext(sc)
 spark = SparkSession.builder.enableHiveSupport().getOrCreate()
@@ -29,13 +30,15 @@ relations_table = "wuzj_spark_relations"
 # 基本数据处理及生成
 def comp_tag(new_result="company_tag_info_latest0703", old_result="company_tag", label_code_relation="label_code_relation", keep_list=False):
     # 从库中读取数据
-    sql_new_result = "(select comp_id, comp_full_name, label_name, classify_id, label_type, label_type_num from %s) t" % new_result
+    sql_new_result = "select comp_id, comp_full_name, label_name, classify_id, label_type, label_type_num from %s" % new_result
     sql_old_result = "(select comp_id, comp_full_name, key_word from %s) t" % old_result
     sql_label_code_relation = "(select * from %s) t" % label_code_relation
      
     data_raw_new = spark.sql(sql_new_result).dropna(how="any")
     data_raw_old_full = sqlContext.read.jdbc(url, sql_old_result, properties).dropna(how="any").withColumnRenamed("key_word", "label_name")
     label_chains_raw = sqlContext.read.jdbc(url, sql_label_code_relation, properties).dropna(how="any")
+        .withColumnRenamed("label_note_name", "label_node_name") \
+        .withColumnRenamed("label_type_note":"label_type_node")
     label_chains_raw.persist()
     data_raw_new.persist()
     # 生成公司id-name字典保存
@@ -102,7 +105,7 @@ def data_aggregator(comp_tag, nctag_filter_num=(150, 1000000)):
     # 为每一个标签赋予一个UUID，这个方式下，只要NAMESPACE不变，重复生成的也会是同一个UUID，避免了增量更新的麻烦
     
     uuid_udf = udf(lambda x: uuid.uuid5(uuid.NAMESPACE_URL, x).hex)
-    tag_comps_aggregated = tag_comps_aggregated.withColumn("tag_uuid", uuid_udf("label_name"))
+    tag_comps_aggregated = tag_comps_aggregated.withColumn("tag_uuid", uuid_udf("label_name"))[["tag_uuid", "comp_int_id", "type"]]
     tag_uuid = tag_comps_aggregated[["label_name", "tag_uuid"]]
     comp_tag = comp_tag.join(tag_uuid, "label_name", "left_outer")
     comp_tag.persist()
@@ -127,6 +130,7 @@ def data_aggregator(comp_tag, nctag_filter_num=(150, 1000000)):
     '''
     comp_tag_relations = comp_tag[["comp_id", "tag_uuid"]].withColumn("rel_value", F.lit(1.0)) \
         .withColumn("rel_type", F.lit("company_tag"))
+        .withColumn("remark", F.lit(98))
     comp_tag_relations.write.jdbc(url=url, table=relations_table, mode="append")
     print("company tag link saved!")
     # comp_tag.drop(["label_name", "comp_id"], axis=1, inplace=True)
@@ -140,125 +144,80 @@ def properties(comp_tag, label_chains_raw, tag_uuid):
     comp_tags_aggregated = comp_tag.groupby("comp_id") \
         .agg(F.collect_set("tag_uuid").alias("comp_tag_list")).dropna(how="any")
     comp_tags_aggregated.write.jdbc(url=url, table=spark_comp_infos_table, mode="append")
+    print("comp tags infos saved!)
     
     # 储存概念标签的位置关系之后作为筛选属性
-    ctag_position_file_name = "../Data/Output/Tag_graph/ctag_position.pkl"
-    label_chains_raw = label_chains_raw.withColumnRenamed("label_note_name", "label_node_name") \
-        .withColumnRenamed("label_type_note":"label_type_node")
     tag_uuid_root = tag_code_dict.withColumnRenamed("tag_uuid": "root_uuid") \
-        .withCOlumnRenamed("label_name":"root_name")
-    tag_uuid_node = tag_code_dict.rename(index=str, columns={"tag_code":"node_code", "label_name":"node_name"}, inplace=False)
-    label_chains_link = label_chains_raw.merge(tag_code_node, how='left', left_on='label_node_name', right_on='node_name') \
-        .merge(tag_code_root, how='left', left_on='label_root_name', right_on='root_name')
-    label_chains_link["distance"] = label_chains_link.label_type_node - label_chains_link.label_type_root
-    label_chains_link = label_chains_link[["node_code", "root_code", "distance"]]
-    label_chains_link_reverse = label_chains_link[["root_code", "node_code", "distance"]]
-    label_chains_link_reverse.columns = ["node_code", "root_code", "distance"]
-    label_chains_link_reverse.distance = - label_chains_link_reverse.distance
-    label_chains_all = pd.concat([label_chains_link, label_chains_link_reverse])
-    label_self = label_chains_all.node_code.drop_duplicates().reset_index().rename(index=str, columns={"index": "distance"}, inplace=False)
-    label_self.distance = 0
-    label_self["root_code"] = label_self["node_code"]
-    label_chains_all = pd.concat([label_chains_all, label_self]).dropna(how="any")
-    label_chains_all["label_link"] = label_chains_all.node_code + "-" + label_chains_all.root_code
+        .withColumnRenamed("label_name":"root_name")
+    tag_uuid_node = tag_code_dict.withColumnRenamed("tag_uuid": "node_uuid") \
+        .withColumnRenamed("label_name":"node_name")
+    label_chains_raw = label_chains_raw \
+        .join(tag_uuid_node, label_chains_raw.label_node_name==tag_uuid_node.node_name, "left_outer") \
+        .join(tag_uuid_root, label_chains_raw.label_root_name==tag_uuid_node.root_name, "left_outer")
+        .withColumn("distance", label_chains_raw["label_type_node"] - label_chains_raw["label_type_root"])[["node_code", "root_code", "distance"]]
+
+    label_chains_link = label_chains_raw \
+        .union(label_chains_raw.withColumn("distance", - label_chains_raw["distance"])[["root_code", "node_code", "distance"]])
+
+    label_self = label_chains_link.select("node_code") \
+        .withColumn("root_code", label_chains_link.node_code)
+        .withColumn("distance", F.lit(0))
+    label_chains_link = label_chains_link.union(label_self) \
+        .withColumn("node_link", F.concat_ws("-", label_chains_link["node_code"], label_chains_link["root_code"]))
+    return label_chains_link
 
 
 ## 标签关系计算
 def final_count(l1, l2):
-    if len(l1.union(l2)) == 0:
+    if len(set(l1 + l2)) == 0:
         return 0
     else:
-        return len(l1.intersection(l2))/len(l1.union(l2))
+        return len(x for x in l1 if x in l2)/len(set(l1 + l2))
 
-def simple_minmax(column_target, min_v=0.001, max_v=1):
-    target = column_target.values.reshape(-1, 1)
-    scaler = MinMaxScaler(feature_range=(min_v, max_v))
-    scaler.fit(target)
-    return scaler.transform(target)
-
+def simple_minmax(df, target_col_name, min_v=0.001, max_v=1):
+    mms = MinMaxScaler(inputCol=target_col_name, outputCol=target_col_name + "_scaled", min=min_v)
+    model = mms.fit(df)
+    df = model.transform(df)
+    return df
 
 
 # 标签两两关系计算2
-def tag_tag2():
-    tag_comps_aggregated_raw = pickle.load(open("../Data/Output/Tag_graph/tag_comps_aggregated.pkl", "rb"))
-    tag_comps_aggregated_raw.comp_int_id = tag_comps_aggregated_raw.comp_int_id.apply(lambda x: list(x))
-    tag_comps_aggregated = sqlContext.createDataFrame(tag_comps_aggregated_raw)
-    result = tag_comps_aggregated.withColumnRenamed("comp_int_id", "comp_int_id2") \
+def tag_tag2(tag_comps_aggregated, label_chains_link):
+    log_udf = udf(lambda x: math.log(min(0.000001 + x, 1)))
+    rel_type_dict = {0: "ctag_ctag", 1: "ctag_nctag", 2: "nctag_nctag"}
+    rel_type_udf = udf(lambda x: rel_type_dict.get(x))
+    result = tag_comps_aggregated.withColumnRenamed("tag_uuid", "tag_uuid2") \
+        .withColumnRenamed("comp_int_id", "comp_int_id2") \
         .withColumnRenamed("type", "type2") \
-        .withColumnRenamed("tag_uuid", "tag_uuid2") \
         .crossJoin(tag_comps_aggregated) \
-        .rdd.map(lambda x: (x[2], x[5]) + (x[1] + x[4], final_count(set(x[0]), set(x[3])))) \
-        .distinct().toDF(["tag1", "tag2", "link_type", "link_value"]).filter("link_value > 0")
-    tag_tag = result.toPandas()
-    tag_tag.columns = ["tag1", "tag2", "link_type", "link_value"]
-    tag_tag.link_value = nctag_nctag.link_value.apply(lambda x: np.log2(min(0.000001 + x, 1)))
-    tag_tag.link_value = simple_minmax(nctag_nctag.link_value)
-    tag_tag = tag_tag[["tag1", "tag2", "link_type", "link_value"]].drop_duplicates()
-    tag_tag["tag_link"] = tag_tag.tag1 + "-" + tag_tag.tag2
-    tag_tag_dict = dict(zip(tag_tag.tag_link, (tag_tag.link_value, tag_tag.link_type)))
-    tag_tag_file_name = "../Data/Output/Tag_graph/tag_tag.pkl"
-    tag_tag_file = open(tag_tag_file_name, "wb")
-    pickle.dump(tag_tag_dict, tag_tag_file)
-    tag_tag_file.close()
+        .rdd.map(lambda x: (x[0], x[3]) + (final_count(x[1], x[4]), x[2] + x[5])) \
+        .distinct() \
+        .toDF(["src_id", "target_id", "rel_value", "rel_type"]) \
+        .filter("rel_value > 0")
+        .withColumn("rel_value", log_udf("rel_value"))
+    tag_tag = simple_minmax(result, "rel_value")[["src_id", "target_id", "rel_type", "rel_value_scaled"]] \
+        .drop_duplicates() \
+        .withColumnRenamed("rel_value_scaled", "rel_value") \
+        .withColumn("node_link", F.concat_ws("-", result["src_id"], result["target_id"])) \
+        .join(label_chains_link[label_chains_link.distance == 1][["node_link", "distance"]], "node_link", "left_outer") \
+        .fillna(99) \
+        .withColumn("rel_type", rel_type_udf("rel_type")) \
+        .withColumnRenamed("distance", "remark")[["src_id", "target_id", "rel_type", "rel_value", "remark"]] \
+        .rdd \
+        .map(lambda x: ("-".join(sorted((x[0], x[1]))), x[0], x[1], x[2], x[3], x[4])) \
+        .toDF(["sorted_link", "src_id", "target_id", "rel_type", "rel_value", "remark"]) \
+        .drop_duplicates(subset=["sorted_link"]) \
+        [["src_id", "target_id", "rel_type", "rel_value", "remark"]]
     
     '''
     ################################
     * 概念-概念标签关系用于导入图数据库 *
     ################################
     '''
-    # 过滤同链标签
-    ctag_position = pickle.load(open("../Data/Output/Tag_graph/ctag_position.pkl", "rb"))
-    label_chains_all = pd.DataFrame.from_dict(ctag_position, orient="index").reset_index()
-    label_chains_all.columns = ["node_link", "distance"]
-    label_chains_drop = label_chains_all[label_chains_all.distance != 1]
-    node_chains = label_chains_all[label_chains_all.distance == 1]
-    tag_tag_relations = tag_tag[~tag_tag.tag_link.isin(label_chains_drop.node_link)][["tag1", "tag2", "link_value", "link_type", "tag_link"]].copy()
-
-    tag_tag_relations.rename(index=str, columns={"link_type": "rel_type"}, inplace=True)
-    link_type_dict = {0: "ctag_ctag", 1: "ctag_nctag", 2: "nctag_nctag"}
-    
-    tag_tag_relations.rel_type = tag_tag_relations.rel_type.apply(lambda x: link_type_dict.get(x))
-    tag_tag_relations.loc[tag_tag_relations.tag_link.isin(node_chains.node_link), "rel_type"] = "node_of"
-    tag_tag_relations.drop(["tag_link"], axis=1, inplace=True)
-    tag_tag_relations.columns = header_dict.get("relation")
-    tag_tag_relations.to_csv("../Data/Output/Tag_graph/tag_tag_relations.relations")
-    
-    print("tag-tag link records count: %d" % len(tag_tag_relations))
-    del(tag_comps_aggregated)
-    del(tag_tag)
-    gc.collect()
+    tag_tag.write.jdbc(url=url, table=relations_table, mode="append")
+    print("tag tag link saved!")
+          
     return 0
 
 
-# 需要导入neo4j的数据进行合并
-def neo4j_merge(tag_points, company_points, comp_tag_relations, tag_tag_relations):
-    # 全部点集合
-    tag_points = pd.read_csv("../Data/Output/Tag_graph/tag_points.points")
-    company_points = pd.read_csv("../Data/Output/Tag_graph/company_points.points")
-    points = pd.concat([tag_points, company_points]).drop_duplicates().reset_index(drop=True)
-    points.columns = header_dict["point"]
-    points.reset_index(drop=True, inplace=True)
-    points.rename(index=str, columns={"index": "id"}, inplace=True)
-    points.fillna("", inplace=True)
-    points.drop_duplicates(subset=["point_id"], inplace=True)
-    points = points.groupby("point_id").agg("min").reset_index()
-    # points.id = points.id.apply(lambda x: x + 1)
-    points.to_csv("../Data/Output/Tag_graph/all_points.csv", index=False, header=None)
-    print("Points saved!")
-
-    # 边数据整合
-    comp_tag_relations = pd.read_csv("../Data/Output/Tag_graph/comp_tag_relations.relations")
-    tag_tag_relations = pd.read_csv("../Data/Output/Tag_graph/tag_tag_relations.relations")
-    all_relations = pd.concat([tag_tag_relations, comp_tag_relations]) \
-        .drop_duplicates().reset_index(drop=True)
-    all_relations.columns = header_dict["relation"]
-    all_relations["link"] = all_relations[["src_id", "target_id"]].apply(lambda x: "-".join(sorted([str(x[0]), str(x[1])])), axis=1)
-    all_relations.drop_duplicates(subset=["link"], inplace=True)
-    all_relations.drop(["link"], axis=1, inplace=True)
-    all_relations = all_relations[["src_id", "target_id", "rel_value", "rel_type"]]
-    all_relations.drop(index=all_relations[all_relations.src_id == all_relations.target_id].index)
-    all_relations.reset_index(drop=True, inplace=True)
-    all_relations.to_csv("../Data/Output/Tag_graph/all_relations.csv", index=False, header=None)
-    print("Relations saved!")
-    return 0
 
