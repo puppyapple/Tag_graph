@@ -21,11 +21,10 @@ properties = {"user": "wuzijun","password": "rt6rcU6a11a7on6m"}
 config.read(hdfs + "Data/Input/Tag_graph/filter.conf")
 ctag_keep_list = config['FILTER']['filter_list'].split(",")
 
-header_dict = {
-    "point": ["point_id", "name", "property", "point_type"],
-    "relation": ["src_id", "target_id", "rel_value", "rel_type"]
-}
-
+comp_id_name_table = "wuzj_spark_comp_id_name"
+tag_uuid_table = "wuzj_spark_tag_uuid"
+points_table = "wuzj_spark_points"
+relations_table = "wuzj_spark_relations"
 
 # 基本数据处理及生成
 def comp_tag(new_result="company_tag_info_latest0703", old_result="company_tag", label_code_relation="label_code_relation", keep_list=False):
@@ -37,11 +36,11 @@ def comp_tag(new_result="company_tag_info_latest0703", old_result="company_tag",
     data_raw_new = spark.sql(sql_new_result).dropna(how="any")
     data_raw_old_full = sqlContext.read.jdbc(url, sql_old_result, properties).dropna(how="any").withColumnRenamed("key_word", "label_name")
     label_chains_raw = sqlContext.read.jdbc(url, sql_label_code_relation, properties).dropna(how="any")
-    
+    label_chains_raw.persist()
     data_raw_new.persist()
     # 生成公司id-name字典保存
     comp_id_name = data_raw_new[["comp_id", "comp_full_name"]].union(data_raw_old_full[["comp_id", "comp_full_name"]]).drop_duplicates()
-    comp_id_name.write.jdbc(url=url, table="wuzj_spark_comp_id_name", mode="append")  
+    comp_id_name.write.jdbc(url=url, table=comp_id_name_table, mode="append")  
     print("comp_id_name_dict saved!")
     
     '''
@@ -50,7 +49,7 @@ def comp_tag(new_result="company_tag_info_latest0703", old_result="company_tag",
     ###############################
     '''
     company_points = comp_id_name[["comp_id", "comp_full_name"]].drop_duplicates(subset=["comp_id"]) \
-        .withColumn("property", F.lit(""))
+        .withColumn("property", F.lit("")) \
         .withColumn("point_type", F.lit("company"))
 
     
@@ -87,30 +86,27 @@ def comp_tag(new_result="company_tag_info_latest0703", old_result="company_tag",
 
 def data_aggregator(comp_tag, nctag_filter_num=(150, 1000000)):
     # 为每一个公司赋予一个整数ID，以减小之后的计算量
-    comp_tag = comp_tag.withColumn("comp_int_id", F.monotonically_increasing_id())
+    comp_tag = comp_tag.withColumn("comp_int_id", F.monotonically_increasing_id()) \
         .withColumn("count_comps", F.lit(1)) 
-    comp_tag_rdd = comp_tag.rdd.map(lambda x: ((x[1], x[2]), (x[3], x[4])))
+    # comp_tag_rdd = comp_tag.rdd.map(lambda x: ((x[1], x[2]), (x[3], x[4])))
     # 将标签数据各自按照标签id进行聚合
-    tag_comps_aggregated = comp_tag_rdd.reduceByKey()
-    
-    .groupby("label_name") \
-        .agg({"comp_int_id": lambda x: set(x), "count_comps": "count", "type": max}).reset_index()
+    tag_comps_aggregated = comp_tag.groupby("label_name") \
+        .agg(F.collect_set("comp_int_id").alias("comp_int_id"), \
+             F.max("type").alias("type"), \
+             F.sum("count_comps").alias("count_comps"))
     tag_comps_aggregated = tag_comps_aggregated[((tag_comps_aggregated.count_comps >= nctag_filter_num[0]) \
-                                                 & (tag_comps_aggregated.count_comps <= nctag_filter_num[1])) \
-                                                 | (tag_comps_aggregated.type == 0)]\
-                                                 [["label_name", "comp_int_id", "type"]]
+        & (tag_comps_aggregated.count_comps <= nctag_filter_num[1])) \
+        | (tag_comps_aggregated.type == 0)]\
+        [["label_name", "comp_int_id", "type"]]
 
     # 为每一个标签赋予一个UUID，这个方式下，只要NAMESPACE不变，重复生成的也会是同一个UUID，避免了增量更新的麻烦
-    tag_list = tag_comps_aggregated["label_name"].drop_duplicates().reset_index(drop=True)
-    tag_list = tag_list.reset_index()
-    tag_list.rename(index=str, columns={"index": "tag_uuid"}, inplace=True)
-    tag_list.tag_uuid = tag_list.label_name.apply(lambda x: uuid.uuid5(uuid.NAMESPACE_URL, x).hex)
-    comp_tag = comp_tag.merge(tag_list, how="left", left_on="label_name", right_on="label_name")
-    tag_comps_aggregated = tag_comps_aggregated.merge(tag_list, how="left", left_on="label_name", right_on="label_name")
-    tag_comps_aggregated.drop(["label_name"], axis=1, inplace=True)
-    tag_comps_aggregated_file = "../Data/Output/Tag_graph/tag_comps_aggregated.pkl"
-    pickle.dump(tag_comps_aggregated, open(tag_comps_aggregated_file, "wb"))
     
+    uuid_udf = udf(lambda x: uuid.uuid5(uuid.NAMESPACE_URL, x).hex)
+    tag_comps_aggregated = tag_comps_aggregated.withColumn("tag_uuid", uuid_udf("label_name"))
+    tag_uuid = tag_comps_aggregated[["label_name", "tag_uuid"]]
+    comp_tag = comp_tag.join(tag_uuid, "label_name", "left_outer")
+    comp_tag.persist()
+    tag_comps_aggregated.persist()
     '''
     ###############################
     * 标签id-名称储存用作导入图数据库 *
@@ -118,59 +114,40 @@ def data_aggregator(comp_tag, nctag_filter_num=(150, 1000000)):
     '''
     tag_points = comp_tag[["tag_uuid", "label_name", "type"]]
     tag_type_udf = udf(lambda x: "ctag" if x == 0 else "nctag")
-    tag_points = tag_points.withColumn("type", tag_type_udf("type"))
-    tag_points["point_type"] = "tag"
-    tag_points.columns = header_dict.get("point")
+    tag_points = tag_points.withColumn("type", tag_type_udf("type")) \
+        .withColumnRenamed("type", "property") \
+        .withColumn("point_type", F.lit("tag"))
+    tag_points.write.jdbc(url=url, table=points_table, mode="append")
+    print("tag points saved!")
     
-
     '''
     ###############################
     * 公司与标签关系储存用作入图数据库 *
     ###############################
     '''
-    comp_tag_relations = comp_tag[["comp_id", "tag_uuid"]]
-    comp_tag_relations["rel_value"] = 1.0
-    comp_tag_relations["rel_type"] = "company_tag"
-    comp_tag_relations.columns = header_dict.get("relation")
-    print("company-tag link count: %d" % len(comp_tag_relations))
-    comp_tag_relations.to_csv("../Data/Output/Tag_graph/comp_tag_relations.relations")
+    comp_tag_relations = comp_tag[["comp_id", "tag_uuid"]].withColumn("rel_value", F.lit(1.0)) \
+        .withColumn("rel_type", F.lit("company_tag"))
+    comp_tag_relations.write.jdbc(url=url, table=relations_table, mode="append")
+    print("company tag link saved!")
     # comp_tag.drop(["label_name", "comp_id"], axis=1, inplace=True)
 
+    tag_uuid.write.jdbc(url=url, table=tag_uuid, mode="append")
+    print("tag uuid saved!")
     
-    # 将标签对应的hashcode以字典形式存成二进制文件
-    tag_dict = dict(zip(tag_list.label_name, tag_list.tag_uuid))
-    tag_dict_file = open("../Data/Output/Tag_graph/tag_dict.pkl", "wb")
-    pickle.dump(tag_dict, tag_dict_file)
-    tag_dict_file.close()
-    
-    # 将公司-标签UUID以二进制文件储存
-    pickle.dump(comp_tag, open("../Data/Output/Tag_graph/comp_tag.pkl", "wb"))
-    
-    del(comp_tag)
-    del(tag_points)
-    del(tag_comps_aggregated)
-    gc.collect()
-    return 0
+    return (comp_tag, tag_comps_aggregated, tag_uuid)
 
-def properties():
-    comp_tag = pickle.load(open("../Data/Output/Tag_graph/comp_tag.pkl", "rb"))
-    label_chains_raw = pickle.load(open("../Data/Output/Tag_graph/label_chains_raw.pkl", "rb"))
-    comp_tags_aggregated = comp_tag.groupby("comp_id").agg({"tag_uuid": lambda x: set(x)}).reset_index()
-    comp_tags_aggregated.rename(columns={"tag_uuid": "comp_tag_list"}, inplace=True)
-    comp_tags_aggregated.dropna(how="any")(inplace=True)
-
-    comp_tags_file_name = "../Data/Output/Tag_graph/comp_tags_all.pkl"
-    comp_tags_all_file = open(comp_tags_file_name, "wb")
-    pickle.dump(comp_tags_aggregated, comp_tags_all_file)
-    comp_tags_all_file.close()
+def properties(comp_tag, label_chains_raw, tag_uuid):
+    comp_tags_aggregated = comp_tag.groupby("comp_id") \
+        .agg(F.collect_set("tag_uuid").alias("comp_tag_list")).dropna(how="any")
+    comp_tags_aggregated.write.jdbc(url=url, table=spark_comp_infos_table, mode="append")
     
     # 储存概念标签的位置关系之后作为筛选属性
     ctag_position_file_name = "../Data/Output/Tag_graph/ctag_position.pkl"
-    label_chains_raw.rename(index=str, columns={"label_note_name":"label_node_name", "label_type_note":"label_type_node"}, inplace=True)
-    tag_code_dict = pd.DataFrame.from_dict(pickle.load(open("../Data/Output/Tag_graph/tag_dict.pkl", "rb")), orient="index").reset_index()
-    tag_code_dict.columns = ["label_name", "tag_code"]
-    tag_code_root = tag_code_dict.rename(index=str, columns={"tag_code":"root_code", "label_name":"root_name"}, inplace=False)
-    tag_code_node = tag_code_dict.rename(index=str, columns={"tag_code":"node_code", "label_name":"node_name"}, inplace=False)
+    label_chains_raw = label_chains_raw.withColumnRenamed("label_note_name", "label_node_name") \
+        .withColumnRenamed("label_type_note":"label_type_node")
+    tag_uuid_root = tag_code_dict.withColumnRenamed("tag_uuid": "root_uuid") \
+        .withCOlumnRenamed("label_name":"root_name")
+    tag_uuid_node = tag_code_dict.rename(index=str, columns={"tag_code":"node_code", "label_name":"node_name"}, inplace=False)
     label_chains_link = label_chains_raw.merge(tag_code_node, how='left', left_on='label_node_name', right_on='node_name') \
         .merge(tag_code_root, how='left', left_on='label_root_name', right_on='root_name')
     label_chains_link["distance"] = label_chains_link.label_type_node - label_chains_link.label_type_root
