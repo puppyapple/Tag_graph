@@ -14,6 +14,7 @@ from pyspark import SQLContext, SparkContext
 from pyspark.sql import SparkSession
 from sklearn import preprocessing
 from sklearn.preprocessing import MinMaxScaler
+from sqlalchemy import create_engine
 
 sc = SparkContext.getOrCreate()
 sqlContext=SQLContext(sc)
@@ -31,6 +32,13 @@ db = pymysql.connect(host=host, user=user, password=password, db=database, port=
 config.read("../Data/Input/Tag_graph/filter.conf")
 ctag_keep_list = config['FILTER']['filter_list'].split(",")
 
+engine = create_engine("mysql+pymysql://%s:%s@%s:%s/%s?charset=utf8" % (user, password, host, port, database))
+
+points_table = "wuzj_local_points"
+relations_table = "wuzj_local_relations"
+tag_comps_table = "wuzj_local_tag_comps"
+label_chains_table = "wuzj_local_label_chains"
+
 header_dict = {
     "point": ["point_id", "name", "property", "point_type"],
     "relation": ["src_id", "target_id", "rel_value", "rel_type"]
@@ -38,8 +46,9 @@ header_dict = {
 
 
 # 基本数据处理及生成
-def comp_tag(new_result="company_tag_info_latest0622", old_result="company_tag", label_code_relation="label_code_relation", keep_list=False, db=db):
+def comp_tag(new_result="company_tag_info_latest0703", old_result="company_tag", label_code_relation="label_code_relation", keep_list=False, db=db):
     # 从库中读取数据
+    print("###### Loading data ######")
     sql_new_result = "select comp_id, comp_full_name, label_name, classify_id, label_type, label_type_num from %s" % new_result
     sql_old_result = "select comp_id, comp_full_name, key_word from %s" % old_result
     sql_label_code_relation = "select * from %s" % label_code_relation
@@ -48,28 +57,24 @@ def comp_tag(new_result="company_tag_info_latest0622", old_result="company_tag",
     data_raw_old_full = pd.read_sql(sql_old_result, con=db)
     data_raw_new.fillna("", inplace=True)
     data_raw_old_full.fillna("", inplace=True)
+    print("Data loaded")
     # 生成公司id-name字典保存
-    comp_id_name = pd.concat([data_raw_new[["comp_id", "comp_full_name"]], data_raw_old_full[["comp_id", "comp_full_name"]]]).drop_duplicates()
-
-    comp_id_name_dict = dict(zip(comp_id_name.comp_id, comp_id_name.comp_full_name))
-    comp_id_name_dict_file_name = "../Data/Output/Tag_graph/comp_id_name_dict.pkl"
-    comp_id_name_dict_file = open(comp_id_name_dict_file_name, "wb")
-    pickle.dump(comp_id_name_dict, comp_id_name_dict_file)
-    comp_id_name_dict_file.close()
-    print("comp_id_name_dict saved!")
+    print("###### Processing company_points ######")
+    company_points = pd.concat([data_raw_new[["comp_id", "comp_full_name"]], data_raw_old_full[["comp_id", "comp_full_name"]]]).drop_duplicates()
     
     '''
     ###############################
     * 公司id-名称储存用作导入图数据库 *
     ###############################
     '''
-    company_points = comp_id_name[["comp_id", "comp_full_name"]]
-    # company_points.comp_full_name = company_points.comp_full_name.apply(lambda x: x.strip().replace("(","（").replace(")","）"))
-    company_points.drop_duplicates(inplace=True)
+    company_points.drop_duplicates(subset=["comp_id"], inplace=True)
     company_points["property"] = ""
     company_points["point_type"] = "company"
     company_points.columns = header_dict.get("point")
-    company_points.to_csv("../Data/Output/Tag_graph/company_points.points")
+    company_points.to_csv("../Data/Output/Tag_graph/company_points.points", header=None, index=False)
+    # print("###### Appending company_points to mysql ######")
+    # company_points.to_sql(name=points_table, con=engine, if_exists="append", index=False)
+    print("compnay_points saved")
     
     # 全部概念标签的列表
     ctag_full_list = set(label_chains_raw.label_note_name).union(set(label_chains_raw.label_root_name))
@@ -143,33 +148,40 @@ def data_aggregator(nctag_filter_num=(150, 1000000)):
     tag_list.tag_uuid = tag_list.label_name.apply(lambda x: uuid.uuid5(uuid.NAMESPACE_URL, x).hex)
     comp_tag = comp_tag.merge(tag_list, how="left", left_on="label_name", right_on="label_name")
     tag_comps_aggregated = tag_comps_aggregated.merge(tag_list, how="left", left_on="label_name", right_on="label_name")
+    comp_tag.dropna(how="any", inplace=True)
     tag_comps_aggregated.drop(["label_name"], axis=1, inplace=True)
     tag_comps_aggregated_file = "../Data/Output/Tag_graph/tag_comps_aggregated.pkl"
     pickle.dump(tag_comps_aggregated, open(tag_comps_aggregated_file, "wb"))
+    tag_comps_aggregated["comp_list"] = tag_comps_aggregated.comp_int_id.apply(lambda x: "#".join(list(map(lambda y: str(y), x))))
+    tag_comps_aggregated[["tag_uuid", "comp_list", "type"]].to_csv("../Data/Output/Tag_graph/tag_comps.csv", header=None, index=False)
+    print("tag_comps_aggregated_for_spark saved!")
     
     '''
     ###############################
     * 标签id-名称储存用作导入图数据库 *
     ###############################
     '''
-    tag_points = comp_tag[["tag_uuid", "label_name", "type"]]
+    tag_points = comp_tag[["tag_uuid", "label_name", "type"]].drop_duplicates(subset=["tag_uuid"])
     tag_points.type = tag_points.type.apply(lambda x: "ctag" if x == 0 else "nctag")
     tag_points["point_type"] = "tag"
     tag_points.columns = header_dict.get("point")
-    tag_points.to_csv("../Data/Output/Tag_graph/tag_points.points")
+    tag_points.to_csv("../Data/Output/Tag_graph/tag_points.points", header=None, index=False)
+    # tag_points.to_sql(name=points_table, con=engine, if_exists="append", index=False)
+    print("tag_points appended!")
 
     '''
     ###############################
     * 公司与标签关系储存用作入图数据库 *
     ###############################
     '''
-    comp_tag_relations = comp_tag[["comp_id", "tag_uuid"]]
+    comp_tag_relations = comp_tag[["comp_id", "tag_uuid"]].drop_duplicates()
     comp_tag_relations["rel_value"] = 1.0
     comp_tag_relations["rel_type"] = "company_tag"
     comp_tag_relations.columns = header_dict.get("relation")
     print("company-tag link count: %d" % len(comp_tag_relations))
-    comp_tag_relations.to_csv("../Data/Output/Tag_graph/comp_tag_relations.relations")
-    # comp_tag.drop(["label_name", "comp_id"], axis=1, inplace=True)
+    comp_tag_relations.to_csv("../Data/Output/Tag_graph/comp_tag_relations.relations", header=None, index=False)
+    # comp_tag_relations.to_sql(name=relations_table, con=engine, if_exists="append", index=False)
+    print("comp_tag_relations saved")
 
     
     # 将标签对应的hashcode以字典形式存成二进制文件
@@ -192,7 +204,7 @@ def properties():
     label_chains_raw = pickle.load(open("../Data/Output/Tag_graph/label_chains_raw.pkl", "rb"))
     comp_tags_aggregated = comp_tag.groupby("comp_id").agg({"tag_uuid": lambda x: set(x)}).reset_index()
     comp_tags_aggregated.rename(columns={"tag_uuid": "comp_tag_list"}, inplace=True)
-    comp_tags_aggregated.dropna(how="any")(inplace=True)
+    comp_tags_aggregated.dropna(how="any", inplace=True)
 
     comp_tags_file_name = "../Data/Output/Tag_graph/comp_tags_all.pkl"
     comp_tags_all_file = open(comp_tags_file_name, "wb")
@@ -200,7 +212,6 @@ def properties():
     comp_tags_all_file.close()
     
     # 储存概念标签的位置关系之后作为筛选属性
-    ctag_position_file_name = "../Data/Output/Tag_graph/ctag_position.pkl"
     label_chains_raw.rename(index=str, columns={"label_note_name":"label_node_name", "label_type_note":"label_type_node"}, inplace=True)
     tag_code_dict = pd.DataFrame.from_dict(pickle.load(open("../Data/Output/Tag_graph/tag_dict.pkl", "rb")), orient="index").reset_index()
     tag_code_dict.columns = ["label_name", "tag_code"]
@@ -219,12 +230,10 @@ def properties():
     label_self["root_code"] = label_self["node_code"]
     label_chains_all = pd.concat([label_chains_all, label_self]).dropna(how="any")
     label_chains_all["label_link"] = label_chains_all.node_code + "-" + label_chains_all.root_code
-    ctag_position_dict = dict(zip(label_chains_all.label_link, label_chains_all.distance))
-    ctag_position_file = open(ctag_position_file_name, "wb")
-    pickle.dump(ctag_position_dict, ctag_position_file)
-    ctag_position_file.close()
+    label_chains_all[["label_link", "distance"]].to_csv("../Data/Output/Tag_graph/label_chains.csv", header=None, index=False)
+    print("label_chains saved")
+    
     del(comp_tags_aggregated)
-    del(comp_tags_all_dict)
     gc.collect()
 
 ## 标签关系计算
@@ -362,7 +371,7 @@ def tag_tag2():
     gc.collect()
     return 0
 
-
+'''
 # 需要导入neo4j的数据进行合并
 def neo4j_merge(tag_points, company_points, comp_tag_relations, tag_tag_relations):
     # 全部点集合
@@ -395,7 +404,7 @@ def neo4j_merge(tag_points, company_points, comp_tag_relations, tag_tag_relation
     print("Relations saved!")
     return 0
 
-'''
+
 def to_graph_database(method="replace"):
     import_neo4j = os.system("neo4j-import  --into graph.db --multiline-fields=true --bad-tolerance=1000 --id-type string --nodes:points ../Data/Output/Tag_graph/points_header.csv,../Data/Output/Tag_graph/to_neo4j/all_points.csv --relationships:relations ../Data/Output/Tag_graph/relations_header.csv,../Data/Output/Tag_graph/to_neo4j/all_relations.csv")
     if import_neo4j == 0:

@@ -67,22 +67,20 @@ def comp_tag(new_result="spider_clean_sum.company_tag_new", label_code_relation=
     
     comp_ctag_table = data_raw_new[data_raw_new.classify_id != 4][["comp_id", "label_name"]].withColumn("type", F.lit(0))
     
-    # 新系统下结果中的公司-非概念标签
-    data_raw_nctag_p1 = data_raw_new[data_raw_new.classify_id == 4][["comp_id", "label_name"]]
 
     # 取没有概念标记的作为非概念标签的全集
     comp_nctag_table = data_raw_new[(data_raw_new.classify_id == 4) & (~data_raw_new.label_name.isin(ctag_full_list))] \
         [["comp_id", "label_name"]] \
         .withColumn("type", F.lit(1))
 
-    comp_tag = comp_ctag_table.union(comp_nctag_table)
+    comp_tag_raw = comp_ctag_table.union(comp_nctag_table)
     # data_raw_new.unpersist()
-    return (comp_tag, label_chains_raw, company_points)
+    return (comp_tag_raw, label_chains_raw, company_points)
 
 
-def data_aggregator(comp_tag, nctag_filter_num=(150, 1000000)):
+def data_aggregator(comp_tag_raw, nctag_filter_num=(150, 1000000)):
     # 为每一个公司赋予一个整数ID，以减小之后的计算量
-    comp_tag = comp_tag.withColumn("comp_int_id", F.monotonically_increasing_id()) \
+    comp_tag = comp_tag_raw.withColumn("comp_int_id", F.monotonically_increasing_id()) \
         .withColumn("count_comps", F.lit(1)) 
     # comp_tag_rdd = comp_tag.rdd.map(lambda x: ((x[1], x[2]), (x[3], x[4])))
     # 将标签数据各自按照标签id进行聚合
