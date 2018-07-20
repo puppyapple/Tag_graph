@@ -10,6 +10,7 @@ import pymysql
 import datetime
 import multiprocessing as mp
 import gc
+from tqdm import tqdm
 from pyspark import SQLContext, SparkContext
 from pyspark.sql import SparkSession
 from sklearn import preprocessing
@@ -113,13 +114,9 @@ def comp_tag(new_result="company_tag_info_latest0703", old_result="company_tag",
     comp_tag = pd.concat([comp_ctag_table, comp_nctag_table]).reset_index(drop=True)
     pickle.dump(comp_tag, open("../Data/Output/Tag_graph/comp_tag_raw.pkl", "wb"))
     pickle.dump(label_chains_raw, open("../Data/Output/Tag_graph/label_chains_raw.pkl", "wb"))
-    del(comp_ctag_table_all_infos)
-    del(comp_ctag_table)
-    del(comp_nctag_table)
-    del(company_points)
-    del(comp_tag)
-    del(label_chains_raw)
-    gc.collect()
+    for x in locals().keys():
+        del(locals()[x])
+        gc.collect()
     return 0
 
 
@@ -193,10 +190,9 @@ def data_aggregator(nctag_filter_num=(150, 1000000)):
     # 将公司-标签UUID以二进制文件储存
     pickle.dump(comp_tag, open("../Data/Output/Tag_graph/comp_tag.pkl", "wb"))
     
-    del(comp_tag)
-    del(tag_points)
-    del(tag_comps_aggregated)
-    gc.collect()
+    for x in locals().keys():
+        del(locals()[x])
+        gc.collect()
     return 0
 
 def properties():
@@ -233,15 +229,20 @@ def properties():
     label_chains_all[["label_link", "distance"]].to_csv("../Data/Output/Tag_graph/label_chains.csv", header=None, index=False)
     print("label_chains saved")
     
-    del(comp_tags_aggregated)
-    gc.collect()
+    for x in locals().keys():
+        del(locals()[x])
+        gc.collect()
+    return 0
 
 ## 标签关系计算
 def final_count(l1, l2):
-    if len(l1.union(l2)) == 0:
+    len1 = len(l1)
+    len2 = len(l2)
+    intersect = len(l1.intersection(l2))
+    if intersect == 0:
         return 0
     else:
-        return len(l1.intersection(l2))/len(l1.union(l2))
+        return intersect/(len1 + len2 - intersect)
 
 def simple_minmax(column_target, min_v=0.001, max_v=1):
     target = column_target.values.reshape(-1, 1)
@@ -249,22 +250,21 @@ def simple_minmax(column_target, min_v=0.001, max_v=1):
     scaler.fit(target)
     return scaler.transform(target)
 
-# 计算某组标签两两关联
-def tag_tag_single(tag_tag_part):
-    tag_tag_part["link_value"] = tag_tag_part[["comp_int_id_x", "comp_int_id_y"]].apply(lambda x: final_count(x[0], x[1]), axis=1)
-    tag_tag_part["link_type"] = tag_tag_part[["type_x", "type_y"]].apply(lambda x: x[0] + x[1])
-    result_part = tag_tag_part[tag_tag_part.link_value != 0][["tag_uuid_x", "tag_uuid_y", "link_type", "link_value"]]
-    return result_part
-    # result_part.to_csv("../Data/Output/Tag_graph/temp_result/part_result_%d.relations" % i, index=False, header=None)
-
 
 # 标签两两关系计算
 def tag_tag():
     tag_comps_aggregated = pickle.load(open("../Data/Output/Tag_graph/tag_comps_aggregated.pkl", "rb"))
+    print("Data loaded")
     tag_comps_aggregated["key"] = 1
     tag_tag = tag_comps_aggregated.merge(tag_comps_aggregated, on="key")
+    print("Reduce calculation times")
+    tag_tag["tag_link"] = tag_tag[["tag_uuid_x", "tag_uuid_y"]].apply(lambda x: "-".join(sorted([str(x[0]), str(x[1])])), axis=1)
+    tag_tag.drop_duplicates(subset=["tag_link"], inplace=True)
+    # tag_tag.drop(subset=["link"], axis=1, inplace=True)
     record_len = len(tag_tag)
+    
     interval_size = record_len // 20
+    print("Batch len: %d" % interval_size)
     i = 0
     # 由于非概念标签之间的计算量级较大，服务器内存不足，因此采用分块计算、最后融合的方式
     while interval_size*i < record_len:
@@ -282,10 +282,10 @@ def tag_tag():
     os.system("cat ../Data/Output/Tag_graph/temp_result/part_result_* > ../Data/Output/Tag_graph/temp_result/tag_tag_result_all")
     tag_tag = pd.read_csv("../Data/Output/Tag_graph/temp_result/tag_tag_result_all", header=None)
     tag_tag.columns = ["tag1", "tag2", "link_type", "link_value"]
-    tag_tag.link_value = nctag_nctag.link_value.apply(lambda x: np.log2(min(0.000001 + x, 1)))
-    tag_tag.link_value = simple_minmax(nctag_nctag.link_value)
+    tag_tag.link_value = tag_tag.link_value.apply(lambda x: np.log2(min(0.000001 + x, 1)))
+    tag_tag.link_value = simple_minmax(tag_tag.link_value)
     tag_tag = tag_tag[["tag1", "tag2", "link_type", "link_value"]].drop_duplicates()
-    tag_tag["tag_link"] = tag_tag.tag1 + "-" + tag_tag.tag2
+    # tag_tag["tag_link"] = tag_tag.tag1 + "-" + tag_tag.tag2
     tag_tag_dict = dict(zip(tag_tag.tag_link, (tag_tag.link_value, tag_tag.link_type)))
     tag_tagg_file_name = "../Data/Output/Tag_graph/tag_tag.pkl"
     tag_tag_file = open(tag_tag_file_name, "wb")
@@ -303,7 +303,9 @@ def tag_tag():
     label_chains_all.columns = ["node_link", "distance"]
     label_chains_drop = label_chains_all[label_chains_all.distance != 1]
     node_chains = label_chains_all[label_chains_all.distance == 1]
-    tag_tag_relations = tag_tag[~tag_tag.tag_link.isin(label_chains_drop.node_link)][["tag1", "tag2", "link_value", "link_type", "tag_link"]].copy()
+    tag = pd.concat([tag, tag_tag[["tag2", "tag1", "link_type", "link_value"]]])
+    tag["tag_link"] = tag.tag1 + "-" + tag.tag2
+    tag_tag_relations = tag[~tag.tag_link.isin(label_chains_drop.node_link)][["tag1", "tag2", "link_value", "link_type", "tag_link"]].copy()
 
     tag_tag_relations.rename(index=str, columns={"link_type": "rel_type"}, inplace=True)
     link_type_dict = {0: "ctag_ctag", 1: "ctag_nctag", 2: "nctag_nctag"}
@@ -315,9 +317,9 @@ def tag_tag():
     tag_tag_relations.to_csv("../Data/Output/Tag_graph/tag_tag_relations.relations")
     
     print("tag-tag link records count: %d" % len(tag_tag_relations))
-    del(tag_comps_aggregated)
-    del(tag_tag)
-    gc.collect()
+    for x in locals().keys():
+        del(locals()[x])
+        gc.collect())
     return 0
 
 # 标签两两关系计算2
@@ -366,51 +368,142 @@ def tag_tag2():
     tag_tag_relations.to_csv("../Data/Output/Tag_graph/tag_tag_relations.relations")
     
     print("tag-tag link records count: %d" % len(tag_tag_relations))
-    del(tag_comps_aggregated)
-    del(tag_tag)
-    gc.collect()
+    for x in locals().keys():
+        del(locals()[x])
+        gc.collect()
     return 0
 
-'''
+def cal_block_pair(block1, block2):
+    tmp = block1.merge(block2, on="key")
+    tmp["link_value"] = tmp[["comp_int_id_x", "comp_int_id_y"]].apply(lambda x: final_count(x[0], x[1]), axis=1)
+    tmp["link_type"] = tmp[["type_x", "type_y"]].apply(lambda x: x[0] + x[1], axis=1)
+    result_part = tmp[tmp.link_value != 0][["tag_uuid_x", "tag_uuid_y", "link_type", "link_value"]]
+    # result_part.to_csv("../Data/Output/Tag_graph/temp_result/part_result_%d_%d.relations" % (k + 1, i + 1), index=False, header=None)
+    return result_part
+
+def multiprocess_block(block1, whole_data, process_list, k, process_num=8):
+    result_list = []
+    pool = mp.Pool()
+    for p in range(0, process_num):
+        result_list.append(pool.apply_async(cal_block_pair, (block1, whole_data.iloc[process_list[p].tolist()])))
+    pool.close()
+    pool.join()
+    result_merged = pd.concat([r.get() for r in result_list])
+    result_merged.to_csv("../Data/Output/Tag_graph/temp_result/part_result_%d.relations" % (k + 1), index=False, header=None)
+    
+    for x in locals().keys():
+        del(locals()[x])
+        gc.collect()
+
+# 标签两两关系计算
+def tag_tag4(batch_size=5, process_num=8):
+    tag_comps_aggregated = pickle.load(open("../Data/Output/Tag_graph/tag_comps_aggregated.pkl", "rb"))
+    print("Data loaded")
+    print("------ Start tag tag calculation ------")
+    tag_comps_aggregated["key"] = 1
+    row_num = len(tag_comps_aggregated)
+    index_list = np.array_split(tag_comps_aggregated.index, batch_size)
+    process_list = np.array_split(tag_comps_aggregated.index, process_num)
+    for k in tqdm(range(0, batch_size)):
+        epoch_start_time = datetime.datetime.now()
+        print("*** Start epoch %d at %s ***" % (k + 1, epoch_start_time.strftime('%H:%M:%S')))
+        multiprocess_block(tag_comps_aggregated.iloc[index_list[k].tolist()] , tag_comps_aggregated, process_list, k, process_num=process_num)
+        epoch_end_time = datetime.datetime.now()
+        print("*** Epoch %d finished at %s (time used: %.3f seconds) ***" % (k + 1, epoch_end_time.strftime('%H:%M:%S'), (epoch_end_time - epoch_start_time).total_seconds()))
+        for x in locals().keys():
+            del(locals()[x])
+            gc.collect()
+    print("------ All tag_tag calculation done ------")
+    os.system("cat ../Data/Output/Tag_graph/temp_result/part_result_* > ../Data/Output/Tag_graph/temp_result/tag_tag_result_all")
+    tag_tag = pd.read_csv("../Data/Output/Tag_graph/temp_result/tag_tag_result_all", header=None)
+    tag_tag.columns = ["tag1", "tag2", "link_type", "link_value"]
+    tag_tag.link_value = tag_tag.link_value.apply(lambda x: np.log2(min(0.000001 + x, 1)))
+    tag_tag.link_value = simple_minmax(tag_tag.link_value)
+    tag_tag = tag_tag[["tag1", "tag2", "link_type", "link_value"]].drop_duplicates()
+    tag_tag["tag_link"] = tag_tag.tag1 + "-" + tag_tag.tag2
+    tag_tag_dict = dict(zip(tag_tag.tag_link, (tag_tag.link_value, tag_tag.link_type)))
+    tag_tag_file_name = "../Data/Output/Tag_graph/tag_tag.pkl"
+    tag_tag_file = open(tag_tag_file_name, "wb")
+    pickle.dump(tag_tag_dict, tag_tag_file)
+    tag_tag_file.close()
+    
+    '''
+    ################################
+    * 概念-概念标签关系用于导入图数据库 *
+    ################################
+    '''
+    # 过滤同链标签
+    label_chains_all = pd.read_csv("../Data/Output/Tag_graph/label_chains.csv", header=None)
+    label_chains_all.columns = ["node_link", "distance"]
+    label_chains_drop = label_chains_all[label_chains_all.distance != 1]
+    node_chains = label_chains_all[label_chains_all.distance == 1]
+    tag_tag_relations = tag_tag[~tag_tag.tag_link.isin(label_chains_drop.node_link)][["tag1", "tag2", "link_value", "link_type", "tag_link"]].copy()
+
+    tag_tag_relations.rename(index=str, columns={"link_type": "rel_type"}, inplace=True)
+    link_type_dict = {0: "ctag_ctag", 1: "ctag_nctag", 2: "nctag_nctag"}
+    
+    tag_tag_relations.rel_type = tag_tag_relations.rel_type.apply(lambda x: link_type_dict.get(x))
+    tag_tag_relations.loc[tag_tag_relations.tag_link.isin(node_chains.node_link), "rel_type"] = "node_of"
+    tag_tag_relations.drop(["tag_link"], axis=1, inplace=True)
+    tag_tag_relations.columns = header_dict.get("relation")
+    
+    tag_tag_relations.to_csv("../Data/Output/Tag_graph/tag_tag_relations.relations")
+    
+    print("tag-tag link records count: %d" % len(tag_tag_relations))
+    for x in locals().keys():
+        del(locals()[x])
+        gc.collect()
+    return 0
+        
+
+
 # 需要导入neo4j的数据进行合并
-def neo4j_merge(tag_points, company_points, comp_tag_relations, tag_tag_relations):
+def neo4j_merge():
     # 全部点集合
-    tag_points = pd.read_csv("../Data/Output/Tag_graph/tag_points.points")
-    company_points = pd.read_csv("../Data/Output/Tag_graph/company_points.points")
+    tag_points = pd.read_csv("../Data/Output/Tag_graph/tag_points.points", header=None)
+    company_points = pd.read_csv("../Data/Output/Tag_graph/company_points.points", header=None)
     points = pd.concat([tag_points, company_points]).drop_duplicates().reset_index(drop=True)
     points.columns = header_dict["point"]
     points.reset_index(drop=True, inplace=True)
     points.rename(index=str, columns={"index": "id"}, inplace=True)
     points.fillna("", inplace=True)
     points.drop_duplicates(subset=["point_id"], inplace=True)
-    points = points.groupby("point_id").agg("min").reset_index()
+    points.reset_index(drop=True, inplace=True)
     # points.id = points.id.apply(lambda x: x + 1)
     points.to_csv("../Data/Output/Tag_graph/all_points.csv", index=False, header=None)
     print("Points saved!")
 
     # 边数据整合
-    comp_tag_relations = pd.read_csv("../Data/Output/Tag_graph/comp_tag_relations.relations")
-    tag_tag_relations = pd.read_csv("../Data/Output/Tag_graph/tag_tag_relations.relations")
+    comp_tag_relations = pd.read_csv("../Data/Output/Tag_graph/comp_tag_relations.relations", header=None)
+    tag_tag_relations = pd.read_csv("../Data/Output/Tag_graph/tag_tag_relations.relations", header=None)
+    comp_tag_relations.columns = header_dict["relation"]
+    tag_tag_relations.columns = header_dict["relation"]
+    
+    tag_tag_relations["link"] = tag_tag_relations[["src_id", "target_id"]].apply(lambda x: "-".join(sorted([str(x[0]), str(x[1])])), axis=1)
+    tag_tag_relations.drop_duplicates(subset=["link"], inplace=True)
+    tag_tag_relations.drop(["link"], axis=1, inplace=True)
+    tag_tag_relations.drop(index=tag_tag_relations[tag_tag_relations.src_id == tag_tag_relations.target_id].index, inplace=True)
+    
     all_relations = pd.concat([tag_tag_relations, comp_tag_relations]) \
-        .drop_duplicates().reset_index(drop=True)
-    all_relations.columns = header_dict["relation"]
-    all_relations["link"] = all_relations[["src_id", "target_id"]].apply(lambda x: "-".join(sorted([str(x[0]), str(x[1])])), axis=1)
-    all_relations.drop_duplicates(subset=["link"], inplace=True)
-    all_relations.drop(["link"], axis=1, inplace=True)
-    all_relations = all_relations[["src_id", "target_id", "rel_value", "rel_type"]]
-    all_relations.drop(index=all_relations[all_relations.src_id == all_relations.target_id].index)
-    all_relations.reset_index(drop=True, inplace=True)
+        .drop_duplicates().reset_index(drop=True) 
+
     all_relations.to_csv("../Data/Output/Tag_graph/all_relations.csv", index=False, header=None)
     print("Relations saved!")
+    
+    for x in locals().keys():
+        del(locals()[x])
+        gc.collect()
     return 0
 
 
 def to_graph_database(method="replace"):
-    import_neo4j = os.system("neo4j-import  --into graph.db --multiline-fields=true --bad-tolerance=1000 --id-type string --nodes:points ../Data/Output/Tag_graph/points_header.csv,../Data/Output/Tag_graph/to_neo4j/all_points.csv --relationships:relations ../Data/Output/Tag_graph/relations_header.csv,../Data/Output/Tag_graph/to_neo4j/all_relations.csv")
+    stop_neo4j = os.system("neo4j stop")
+    rm_old_version = os.system("rm -rf ../Data/Output/Tag_graph/to_neo4j/graph.db.last_version")
+    backup_old_version = os.system("mv ../Data/Output/Tag_graph/to_neo4j/graph.db ../Data/Output/Tag_graph/to_neo4j/graph.db.last_version")
+    import_neo4j = os.system("neo4j-import  --into ../Data/Output/Tag_graph/to_neo4j/graph.db --multiline-fields=true --bad-tolerance=1000 --id-type string --nodes:points ../Data/Input/Tag_graph/points_header.csv,../Data/Output/Tag_graph/all_points.csv --relationships:relations ../Data/Input/Tag_graph/relations_header.csv,../Data/Output/Tag_graph/all_relations.csv")
     if import_neo4j == 0:
         print("Data imported to neo4j!")
-        os.system("mv -rf graph.db /home/zijun.wu/my_lib/neo4j-community-3.4.0/data/databases/")
+        start_neo4j = os.system("nohup neo4j start > /data1/zijun.wu/neo4j.log 2>&1 &")
     else:
         print("Import to neo4j failed!")
     return 0
-'''
